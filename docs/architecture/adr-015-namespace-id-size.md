@@ -54,10 +54,10 @@ The namespace ID must provide at least 72 bits of randomness to satisfy criteria
 
 | Namespace ID size (bytes) | Criteria 1 |
 |---------------------------|------------|
-| 8                         | ❌          |
-| 16                        | ✅          |
-| 20                        | ✅          |
-| 32                        | ✅          |
+| 8                         | No         |
+| 16                        | Yes        |
+| 20                        | Yes        |
+| 32                        | Yes        |
 
 Another way to analyze this criteria is to determine the probability of duplicates if there exist N randomly generated namespaces. Columns in the table below represent the approximate probability that a collision would occur if N (e.g. 1 billion) random namespaces are generated.[^3]
 
@@ -83,10 +83,10 @@ We must make some assumptions for the number of rollups that will exist. Ethereu
 
 | Namespace ID size (bytes) | Criteria 2 |
 |---------------------------|------------|
-| 8                         | ✅          |
-| 16                        | ✅          |
-| 20                        | ✅          |
-| 32                        | ✅          |
+| 8                         | Yes        |
+| 16                        | Yes        |
+| 20                        | Yes        |
+| 32                        | Yes        |
 
 ## Notes
 
@@ -168,7 +168,7 @@ Based on this StackOverflow [post](https://crypto.stackexchange.com/questions/54
 | 14 to 29               | 64 + 64 + 56 = 184                                                                                                                    | 3                              |
 | 30 to 45               | 64 + 64 + 64 + 56 = 248                                                                                                               | 4                              |
 
-Note: to verify the number of SHA256 compression invocations, we analyzed the number of loop executions inside the Golang SHA256 implementation [here](https://github.com/golang/go/blob/96add980ad27faed627f26ef1ab09e8fe45d6bd1/src/crypto/sha256/sha256block.go#L83) and it matches the expected number of invocations in the table above. See raw data [here](https://gist.github.com/rootulp/4cfc10c1c80a15cc57f0b35f330ac542).
+Note: to verify the number of SHA256 compression invocations, we analyzed the number of loop executions inside the [Golang SHA256 implementation](https://github.com/golang/go/blob/96add980ad27faed627f26ef1ab09e8fe45d6bd1/src/crypto/sha256/sha256block.go#L83) and it matches the expected number of invocations in the table above. See [raw data](https://gist.github.com/rootulp/4cfc10c1c80a15cc57f0b35f330ac542).
 
 ## Open questions
 

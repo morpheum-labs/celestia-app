@@ -1,14 +1,16 @@
 package blobfactory_test
 
 import (
+	"sync"
 	"testing"
 
-	"github.com/celestiaorg/celestia-app/v6/app"
-	"github.com/celestiaorg/celestia-app/v6/app/encoding"
-	"github.com/celestiaorg/celestia-app/v6/test/util/blobfactory"
-	"github.com/celestiaorg/celestia-app/v6/test/util/random"
-	"github.com/celestiaorg/celestia-app/v6/test/util/testfactory"
-	"github.com/celestiaorg/celestia-app/v6/test/util/testnode"
+	"github.com/celestiaorg/celestia-app/v8/app"
+	"github.com/celestiaorg/celestia-app/v8/app/encoding"
+	"github.com/celestiaorg/celestia-app/v8/test/util/blobfactory"
+	"github.com/celestiaorg/celestia-app/v8/test/util/random"
+	"github.com/celestiaorg/celestia-app/v8/test/util/testfactory"
+	"github.com/celestiaorg/celestia-app/v8/test/util/testnode"
+	"github.com/celestiaorg/go-square/v4/share"
 	"github.com/cometbft/cometbft/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -32,7 +34,7 @@ func TestRandMultiBlobTxsSameSigner_Deterministic(t *testing.T) {
 	marshalledBlobTxs2 := blobfactory.RandMultiBlobTxsSameSigner(t, rand2, signer, pfbCount)
 
 	// additional checks for the sake of future debugging
-	for index := 0; index < pfbCount; index++ {
+	for index := range pfbCount {
 		blobTx1, isBlob := types.UnmarshalBlobTx(marshalledBlobTxs1[index])
 		assert.True(t, isBlob)
 		pfbMsgs1, err := decoder(blobTx1.Tx)
@@ -54,4 +56,22 @@ func TestRandMultiBlobTxsSameSigner_Deterministic(t *testing.T) {
 	}
 
 	assert.Equal(t, marshalledBlobTxs1, marshalledBlobTxs2)
+}
+
+// TestManyBlobsConcurrent verifies that ManyBlobs can be called concurrently
+// without panicking. This is a regression test for a bug where a shared
+// *rand.Rand was passed to ManyBlobs across multiple goroutines, causing a
+// panic due to concurrent access to the non-thread-safe math/rand.Rand.
+func TestManyBlobsConcurrent(t *testing.T) {
+	goroutines := 10
+	wg := &sync.WaitGroup{}
+	for range goroutines {
+		wg.Go(func() {
+			r := random.New()
+			blobs := blobfactory.ManyBlobs(r, []share.Namespace{share.RandomBlobNamespace()}, []int{100})
+			assert.Len(t, blobs, 1)
+			assert.Len(t, blobs[0].Data(), 100)
+		})
+	}
+	wg.Wait()
 }

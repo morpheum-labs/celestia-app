@@ -1,12 +1,13 @@
 package app
 
 import (
+	"sync"
 	"testing"
 	"time"
 
 	"cosmossdk.io/errors"
-	"github.com/celestiaorg/celestia-app/v6/app/params"
-	"github.com/celestiaorg/celestia-app/v6/pkg/appconsts"
+	"github.com/celestiaorg/celestia-app/v8/app/params"
+	"github.com/celestiaorg/celestia-app/v8/pkg/appconsts"
 	tmproto "github.com/cometbft/cometbft/proto/tendermint/types"
 	coretypes "github.com/cometbft/cometbft/types"
 	sdk "github.com/cosmos/cosmos-sdk/types"
@@ -20,7 +21,7 @@ import (
 // TestGovParamFilters tests the functionality of retrieving governance parameter filters from the app.
 // It ensures that the filters list is properly populated and contains the expected message types.
 func TestGovParamFilters(t *testing.T) {
-	app := &App{}
+	app := &App{checkStateMu: &sync.RWMutex{}}
 	filters := app.GovParamFilters()
 
 	require.NotEmpty(t, filters)
@@ -103,7 +104,7 @@ func TestStakingParamFilter(t *testing.T) {
 			params: &stakingtypes.MsgUpdateParams{
 				Params: stakingtypes.Params{
 					BondDenom:     params.BondDenom,
-					UnbondingTime: appconsts.DefaultUnbondingTime,
+					UnbondingTime: appconsts.UnbondingTime,
 				},
 			},
 			expectedErr: nil,
@@ -161,7 +162,7 @@ func TestConsensusParamFilter(t *testing.T) {
 			msg: &consensustypes.MsgUpdateParams{
 				Authority: "authority",
 				Block:     coretypes.DefaultConsensusParams().ToProto().Block,
-				Evidence:  coretypes.DefaultConsensusParams().ToProto().Evidence,
+				Evidence:  EvidenceParams(),
 				Validator: coretypes.DefaultConsensusParams().ToProto().Validator,
 				Abci:      coretypes.DefaultConsensusParams().ToProto().Abci,
 			},
@@ -175,7 +176,7 @@ func TestConsensusParamFilter(t *testing.T) {
 					MaxGas:   coretypes.DefaultConsensusParams().Block.MaxGas + 5000000, // modified value
 					MaxBytes: coretypes.DefaultConsensusParams().Block.MaxBytes,
 				},
-				Evidence:  coretypes.DefaultConsensusParams().ToProto().Evidence,
+				Evidence:  EvidenceParams(),
 				Validator: coretypes.DefaultConsensusParams().ToProto().Validator,
 				Abci:      coretypes.DefaultConsensusParams().ToProto().Abci,
 			},
@@ -186,16 +187,27 @@ func TestConsensusParamFilter(t *testing.T) {
 			msg: &consensustypes.MsgUpdateParams{
 				Authority: "authority",
 				Block:     coretypes.DefaultConsensusParams().ToProto().Block,
-				Evidence:  coretypes.DefaultConsensusParams().ToProto().Evidence,
+				Evidence:  EvidenceParams(),
 				Validator: &tmproto.ValidatorParams{PubKeyTypes: []string{"invalid-type"}}, // Non-default value
 				Abci:      coretypes.DefaultConsensusParams().ToProto().Abci,
 			},
-			expectedErr: sdkerrors.ErrUnauthorized,
+			expectedErr: errors.Wrapf(sdkerrors.ErrUnauthorized, "invalid validator parameters"),
 		},
 		{
 			name:        "invalid case: incorrect message type",
 			msg:         &banktypes.MsgUpdateParams{},
 			expectedErr: sdkerrors.ErrInvalidType,
+		},
+		{
+			name: "invalid case: non-default evidence params",
+			msg: &consensustypes.MsgUpdateParams{
+				Authority: "authority",
+				Block:     coretypes.DefaultConsensusParams().ToProto().Block,
+				Evidence:  &tmproto.EvidenceParams{MaxAgeNumBlocks: 1, MaxAgeDuration: time.Hour, MaxBytes: 1000000},
+				Validator: coretypes.DefaultConsensusParams().ToProto().Validator,
+				Abci:      coretypes.DefaultConsensusParams().ToProto().Abci,
+			},
+			expectedErr: errors.Wrapf(sdkerrors.ErrUnauthorized, "invalid evidence parameters"),
 		},
 	}
 
@@ -207,6 +219,7 @@ func TestConsensusParamFilter(t *testing.T) {
 			} else {
 				require.Error(t, err)
 				require.True(t, errors.IsOf(err, tt.expectedErr))
+				require.Contains(t, err.Error(), tt.expectedErr.Error())
 			}
 		})
 	}

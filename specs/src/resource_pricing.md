@@ -1,7 +1,7 @@
 # Resource Pricing
 
 For all standard cosmos-sdk transactions (staking, IBC, etc), Celestia utilizes
-the [default cosmos-sdk mechanisms](https://docs.cosmos.network/v0.50/learn/beginner/gas-fees) for pricing resources. This involves
+the [default cosmos-sdk mechanisms](https://docs.cosmos.network/sdk/v0.53/learn/beginner/gas-fees#gas-and-fees) for pricing resources. This involves
 incrementing a gas counter during transaction execution each time the state is
 read from/written to, or when specific costly operations occur such as signature
 verification or inclusion of data.
@@ -144,12 +144,12 @@ updated.
 There are four parameters that can be modified via governance to modify gas
 usage.
 
-| Parameter       | Default Value | Description                             | Changeable via Governance |
-|-----------------|---------------|-----------------------------------------|---------------------------|
-| consensus/max_gas     | -1     | The maximum gas allowed in a block. Default of -1 means this value is not capped.             | True                      |
-| auth/tx_size_cost_per_byte | 10 | Gas used per each byte used by the transaction. | True                      |
-| auth/sig_verify_cost_secp256k1 | 1000 | Gas used per verifying a secp256k1 signature | True                      |
-| blob/gas_per_blob_byte | 8 | Gas used per byte used by blob. Note that this value is applied to all encoding overhead, meaning things like the padding of the remaining share and namespace. See PFB gas estimation section for more details. | True                      |
+| Parameter                      | Default Value | Description                                                                                                                                                                                                      | Changeable via Governance |
+|--------------------------------|---------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|---------------------------|
+| consensus/max_gas              | -1            | The maximum gas allowed in a block. Default of -1 means this value is not capped.                                                                                                                                | True                      |
+| auth/tx_size_cost_per_byte     | 10            | Gas used per each byte used by the transaction.                                                                                                                                                                  | True                      |
+| auth/sig_verify_cost_secp256k1 | 1000          | Gas used per verifying a secp256k1 signature                                                                                                                                                                     | True                      |
+| blob/gas_per_blob_byte         | 8             | Gas used per byte used by blob. Note that this value is applied to all encoding overhead, meaning things like the padding of the remaining share and namespace. See PFB gas estimation section for more details. | True                      |
 
 ## Gas Limit
 
@@ -215,7 +215,7 @@ dot over the execution lifecycle of a given transaction. The y-axis is units of
 gas and the x-axis is cumulative gas consumption. The legend shows which color
 indicates what the cause of the gas consumption was.
 
-This code used to trace gas consumption can be found in the `tools/gasmonitor` of the branch for [#2131](https://github.com/celestiaorg/celestia-app/pull/2131), and the script to generate the plots below can be found [here](https://gist.github.com/evan-forbes/948c8cf574f2f50b101c89a95ee1d43c) (warning: this script will not be maintained).
+This code used to trace gas consumption can be found in the `tools/gasmonitor` of the branch for [#2131](https://github.com/celestiaorg/celestia-app/pull/2131), and the script to generate the plots below can be found [in this gist](https://gist.github.com/evan-forbes/948c8cf574f2f50b101c89a95ee1d43c) (warning: this script will not be maintained).
 
 ### MsgSend
 

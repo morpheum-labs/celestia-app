@@ -2,9 +2,215 @@
 
 This guide provides notes for major version releases. These notes may be helpful for users when upgrading from previous major versions.
 
-## Upcoming Major Release
+## v7.0.0
 
-## v6.0.0 (Unreleased)
+### Node Operators (v7.0.0)
+
+Node operators MUST upgrade their binary to this version prior to the v7 activation height.
+
+#### Validator Commission Rate Changes
+
+v7 enforces new commission rate bounds:
+
+- **Minimum commission rate**: 20% (previously variable)
+- **Maximum commission rate**: 60%
+
+Non-compliant validators will have their rates **automatically adjusted** at the upgrade height:
+
+- Validators with a commission rate below 20% will be set to 20%
+- Validators with a max commission rate below 60% will be set to 60%
+
+No manual action is required, but validators should be aware of this change.
+
+#### LevelDB Deprecation
+
+LevelDB (`goleveldb`) is deprecated starting in v7. PebbleDB provides faster performance when saving blocks and is required for Fibre. Node operators should migrate to PebbleDB using the [`migrate-db` tool](../../tools/migrate-db/README.md). LevelDB support will be removed in v8.
+
+#### Horcrux Deprecation
+
+Horcrux is deprecated starting in v7. Future upgrades will require validator keys for fibre, which demands very low signing latency. Horcrux adds signing latency due to threshold signing and network round trips between cosigner nodes, which may be incompatible with upcoming latency requirements. Validators using horcrux should plan to migrate to a local signing setup.
+
+#### Config Changes
+
+##### `min-retain-blocks`
+
+v7 enforces a minimum `min-retain-blocks` value of 3000. This ensures nodes retain enough blocks for other nodes to sync from state sync snapshots. If `min-retain-blocks` in `app.toml` is set to a value between 1 and 2999, the node will log a warning and automatically override the value to 3000 on startup. Valid values:
+
+- `0` (default): retain all blocks (no pruning)
+- `1-2999`: automatically overridden to 3000 with a log warning
+- `>= 3000`: retain at least that many blocks
+
+##### Mempool Type
+
+The mempool `type` field has been removed from new `config.toml` files because celestia-app only supports the CAT mempool. If your existing `config.toml` still contains a mempool `type`, it will be ignored and overridden to `cat` at startup with a warning. You can safely remove the `type` line from the `[mempool]` section of your `config.toml`.
+
+Notably, the `nop` mempool is no longer supported. If you were using the nop mempool for a specialized setup, please [open an issue](https://github.com/celestiaorg/celestia-app/issues) so we can accommodate your use case.
+
+### State Machine Changes (v7.0.0)
+
+#### Blocked Module Account Addresses
+
+v7 prevents direct fund transfers to module accounts via `MsgSend` or `bank send`. Module accounts can still receive funds through protocol mechanisms (e.g., escrow). The governance module account is exempt from this restriction.
+
+#### New Modules
+
+**`x/forwarding`** (CIP-45):
+
+Single-signature cross-chain transfers through Celestia via Hyperlane warp routes. Users send tokens to a deterministically derived forwarding address, and anyone can permissionlessly trigger forwarding to the committed destination.
+
+- `MsgForward` - Forwards tokens from a forwarding address to a committed destination via Hyperlane
+
+See the [x/forwarding README](../../x/forwarding/README.md) for details.
+
+**`x/zkism`**:
+
+Hyperlane Interchain Security Module (ISM) that authorizes Hyperlane message processing verified by SP1 Groth16 zero-knowledge proofs.
+
+- `CreateInterchainSecurityModule` - Create an ISM with initial state and verifier configuration
+- `UpdateInterchainSecurityModule` - Verify a state transition proof and update ISM state
+- `SubmitMessages` - Verify a membership proof and authorize Hyperlane message IDs
+
+See the [x/zkism README](../../x/zkism/README.md) for details.
+
+#### Store Migrations
+
+v7 adds a new store key for the `zkism` module. This migration is handled automatically by the upgrade handler.
+
+## v6 - 128mb/6s
+
+This section is specific to bumping from 32mb/6s in the v6 release to 128mb/6s. If you're upgrading from v5, please check the [v6.0.0](#v600) first. And only then check this one.
+
+### Hardware requirements
+
+After upgrading to 128mb/6s, specific validator hardware specifications are required to participate in consensus and propose blocks. Based on our validator survey, the following lists the CPUs that passed the benchmark and those that did not. If your CPU is not listed, please run the benchmark available [`tools/cpu_requirements`](../../tools/cpu_requirements/README.md).
+
+<details>
+  <summary>Supported CPUs:</summary>
+- AMD Ryzen 9 7950X
+- AMD Ryzen 9 7950X3D
+- AMD Ryzen 9 9900X
+- AMD Ryzen 7 PRO 8700GE
+- AMD Ryzen 7 3700X
+- AMD Ryzen 3900X
+- AMD 7600
+- AMD 7700X
+- AMD 7900X
+- AMD Ryzen 7900
+- AMD EPYC 4344P
+- AMD EPYC 4464P
+- AMD EPYC 4545P
+- AMD EPYC 4584PX
+- AMD EPYC 7313P
+- AMD EPYC 7452
+- AMD EPYC 7543P 32C/64T
+- AMD EPYC 9124
+- AMD EPYC 9454P
+- AMD EPYC 9555P
+- 13th Gen Intel Core i5-13500
+- Core i7-1270P
+- Intel Xeon-E 2386G
+
+</details>
+
+<details>
+  <summary>NOT supported CPUs:</summary>
+  - AMD Ryzen 9 5950X
+  - AMD EPYC 7443P 24-Core
+  - Intel Xeon Platinum 8474C
+  - Intel Xeon Gold 6254
+  - Intel(R) Xeon(R) Silver 4210
+  - Intel Xeon E5-1620
+  - Intel Dual Xeon Silver 4116
+</details>
+
+### Config Changes
+
+#### `verify_data`
+
+A new `verify_data` option was added to the `[blocksync]` section of `config.toml`. This option controls whether the node calls `ProcessProposal` to validate application data in each block during block sync. It defaults to `true`.
+
+```toml
+[blocksync]
+
+# If true, the node will verify the application data in the block via ProcessProposal
+# during block sync. If false, this verification is skipped.
+# Default: true
+verify_data = true
+```
+
+## v6.0.0
+
+This release contains all the changes from [CIP-042](https://github.com/celestiaorg/CIPs/blob/main/cips/cip-042.md). Notably:
+
+- Lowers the unbonding period to ~14 days
+- Increases maximum block, square, and transaction size
+- Removes the token filter for Hyperlane and IBC
+- Privval Interface Extension for Arbitrary Message Signing
+- Reduce issuance to 2.5% and increase minimum commission to 10%
+
+### Hardware Requirements
+
+v6 changes the [hardware requirements](https://docs.celestia.org/how-to-guides/nodes-overview#consensus-nodes) for consensus nodes. Please ensure your consensus node meets these requirements.
+
+### Binary Building
+
+Validators should build binaries in freshly created environments or download pre-built binaries from official releases. Many validators have experienced issues due to building binaries in environments with outdated dependencies, conflicting libraries, or stale build artifacts.
+
+### Key Management Service (KMS) changes
+
+This release introduces a new message type that needs to be signed by KMS. **If you use Horcrux or TmKMS, you must use these versions to participate in consensus. If you use an alternative KMS, please reach out.**
+
+**Disclaimer:** (KMS) are third-party software. Validators are responsible for ensuring their own KMS setup is correctly configured.
+An incorrect setup may result in double signing, which can lead to slashing. So, any error log should be thoroughly investigated, even if the KMS appears to be signing normally.
+
+Validators must also ensure they maintain a fast and reliable setup. Future network upgrades will require low signing latency, so server colocation can be explored to achieve faster signatures.
+
+**Validators choosing to run KMS do so at their own risk.**
+
+#### Horcrux
+
+For horcrux, use [v3.3.3-celestia](https://github.com/celestiaorg/horcrux/releases/tag/v3.3.3-celestia). All the setups and configs remain the same.
+
+#### TmKMS
+
+For TmKMS, use [v0.15.0](https://github.com/iqlusioninc/tmkms/releases/tag/v0.15.0). All the setups and configs remain the same. Using a prior version will not allow you to propose blocks.
+
+### Config changes
+
+This release introduces a new block propagation reactor and configuration changes to accommodate the increased throughput. The relevant v6 configuration changes can be applied to existing config using the `celestia-appd update-config` command or by manually updating the config.toml and app.toml.
+
+To modify your existing configs, the `celestia-appd update-configs` command can be used.
+
+```shell
+celestia-appd update-config
+```
+
+this uses version 6 and the default home (.celestia-app). Those can be changed or specified with flags as well.
+
+```shell
+celestia-appd update-config --app-version 6 --home ~/.celestia-app
+```
+
+To manually modify the configs, change the following values.
+
+```toml
+[rpc]
+max_body_bytes = 436207616
+
+[p2p]
+send_rate = 25165824
+recv_rate = 25165824
+
+[mempool]
+type = "cat"
+max_tx_bytes = 8388608
+ttl-duration = "0s"
+ttl-num-blocks = 12
+max-gossip-delay = "1m0s"
+
+[consensus]
+enable_legacy_block_prop = false
+```
 
 ## v5.0.0
 
@@ -81,13 +287,13 @@ Celestia-app v4.0.0 includes significant state machine changes due to major depe
 
 #### New Messages (Added Modules)
 
-**`x/circuit` Circuit Breaker Module** ([cosmos-sdk docs](https://docs.cosmos.network/v0.50/build/modules/circuit)):
+**`x/circuit` Circuit Breaker Module** ([cosmos-sdk docs](https://docs.cosmos.network/sdk/v0.50/build/modules/circuit/README)):
 
 - `MsgAuthorizeCircuitBreaker` - Grant circuit breaker permissions
 - `MsgTripCircuitBreaker` - Disable message execution
 - `MsgResetCircuitBreaker` - Re-enable message execution
 
-**`x/consensus` Consensus Parameters Module** ([cosmos-sdk docs](https://docs.cosmos.network/v0.50/build/modules/consensus)):
+**`x/consensus` Consensus Parameters Module** ([cosmos-sdk docs](https://docs.cosmos.network/sdk/v0.50/build/modules/consensus/README)):
 
 - `MsgUpdateParams` - Update consensus parameters via governance (replaces CometBFT consensus param updates)
 
@@ -116,7 +322,7 @@ Celestia-app v4.0.0 includes significant state machine changes due to major depe
 - **Consensus parameters** moved from CometBFT to dedicated `x/consensus` module
 - **All modules** now use module-specific parameter update messages instead of legacy `x/params` proposals
 
-**IBC v6 to v8 Protocol Changes** ([v6 to v7](https://ibc.cosmos.network/main/migrations/v6-to-v7), [v7 to v8](https://ibc.cosmos.network/main/migrations/v7-to-v8))
+**IBC v6 to v8 Protocol Changes** ([v6 to v7](https://ibc.cosmos.network/v8/migrations/v6-to-v7/), [v7 to v8](https://ibc.cosmos.network/v8/migrations/v7-to-v8))
 
 ### Library Consumers (v4.0.0)
 
@@ -126,7 +332,7 @@ Celestia-app v4.0.0 includes significant state machine changes due to major depe
 - Remove: `x/capability`, `x/crisis`, `x/paramfilter`
 - Update: `github.com/cosmos/ibc-go/v8` (from v6)
 
-**API Breaking Changes** ([cosmos-sdk migration guide](https://docs.cosmos.network/v0.50/build/migrations/upgrading)):
+**API Breaking Changes** ([cosmos-sdk migration guide](https://cosmos-docs.mintlify.app/sdk/v0.50/build/migrations/upgrade-reference)):
 
 - Module keepers now accept `context.Context` instead of `sdk.Context`
 - `BeginBlock`/`EndBlock` signatures changed
@@ -205,9 +411,9 @@ For more information refer to the module [docs](../../x/signal/README.md)
 
 ### Node Operators (v2.0.0)
 
-If you are a consensus node operator, please follow the communication channels listed under [network upgrades](https://docs.celestia.org/how-to-guides/participate#network-upgrades) to learn when this release is recommended for each network (e.g. Mocha, Mainnet Beta).
+If you are a consensus node operator, please follow the communication channels listed under [network upgrades](https://docs.celestia.org/operate/maintenance/network-upgrades/#announcement-channels) to learn when this release is recommended for each network (e.g. Mocha, Mainnet Beta).
 
-Consensus node operators are expected to upgrade to this release _prior_ to the Lemongrass hardfork if they intend to continue participating in the network. The command used to start the [consensus node](https://docs.celestia.org/how-to-guides/consensus-node#start-the-consensus-node) or [validator node](https://docs.celestia.org/how-to-guides/validator-node#run-the-validator-node) will accept an additional `--v2-upgrade-height` flag. See [this table](https://docs.celestia.org/how-to-guides/network-upgrade-process#lemongrass-network-upgrade) for upgrade heights for each network. Node operators SHOULD NOT use cosmovisor to upgrade their binary.
+Consensus node operators are expected to upgrade to this release _prior_ to the Lemongrass hardfork if they intend to continue participating in the network. The command used to start the [consensus node](https://docs.celestia.org/operate/consensus-validators/consensus-node/) or [validator node](https://docs.celestia.org/operate/consensus-validators/validator-node/) will accept an additional `--v2-upgrade-height` flag. See [this table](https://docs.celestia.org/operate/maintenance/network-upgrades/#lemongrass-network-upgrade) for upgrade heights for each network. Node operators SHOULD NOT use cosmovisor to upgrade their binary.
 
 Consensus node operators should enable the BBR (Bottleneck Bandwidth and Round-trip propagation time) congestion control algorithm. See [#3812](https://github.com/celestiaorg/celestia-app/pull/3812).
 

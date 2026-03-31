@@ -5,8 +5,9 @@
 [![GitHub Release](https://img.shields.io/github/v/release/celestiaorg/celestia-app)](https://github.com/celestiaorg/celestia-app/releases/latest)
 [![Go Report Card](https://goreportcard.com/badge/github.com/celestiaorg/celestia-app)](https://goreportcard.com/report/github.com/celestiaorg/celestia-app)
 [![GitPOAP Badge](https://public-api.gitpoap.io/v1/repo/celestiaorg/celestia-app/badge)](https://www.gitpoap.io/gh/celestiaorg/celestia-app)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/celestiaorg/celestia-app)
 
-celestia-app is the software used by [validators](https://docs.celestia.org/how-to-guides/validator-node) and [consensus nodes](https://docs.celestia.org/how-to-guides/consensus-node) on the Celestia consensus network. celestia-app is a blockchain application built using parts of the Cosmos stack:
+celestia-app is the software used by [validators](https://docs.celestia.org/operate/consensus-validators/validator-node/) and [consensus nodes](https://docs.celestia.org/operate/consensus-validators/consensus-node/) on the Celestia consensus network. celestia-app is a blockchain application built using parts of the Cosmos stack:
 
 - [celestiaorg/cosmos-sdk](https://github.com/celestiaorg/cosmos-sdk) a fork of [cosmos/cosmos-sdk](https://github.com/cosmos/cosmos-sdk)
 - [celestiaorg/celestia-core](https://github.com/celestiaorg/celestia-core) a fork of [cometbft/cometbft](https://github.com/cometbft/cometbft)
@@ -35,7 +36,7 @@ node            |  |                               |  |
 
 ### From source
 
-1. [Install Go](https://go.dev/doc/install) 1.24.4
+1. [Install Go](https://go.dev/doc/install) 1.26.1
 1. Clone this repo
 1. Install the celestia-appd binary. This installs a "multiplexer" binary that will also download embedded binaries for the latest celestia-app v3.x.x and v4.x.x release.
 
@@ -61,7 +62,7 @@ If you'd rather not install from source, you can download a prebuilt binary from
     ./celestia-appd --help
     ```
 
-1. [Optional] verify the prebuilt binary checksum. Download `checksums.txt` and then verify the checksum:
+1. (Optional) verify the prebuilt binary checksum. Download `checksums.txt` and then verify the checksum:
 
     ```shell
     sha256sum --ignore-missing --check checksums.txt
@@ -73,7 +74,7 @@ If you'd rather not install from source, you can download a prebuilt binary from
     celestia-app_Linux_x86_64.tar.gz: OK
     ```
 
-See <https://docs.celestia.org/how-to-guides/celestia-app> for more information.
+See <https://docs.celestia.org/operate/consensus-validators/install-celestia-app/> for more information.
 
 ## Usage
 
@@ -82,13 +83,13 @@ See <https://docs.celestia.org/how-to-guides/celestia-app> for more information.
 
 ### Prerequisites
 
-Enable the [BBR](https://www.ietf.org/archive/id/draft-cardwell-iccrg-bbr-congestion-control-01.html) ("Bottleneck Bandwidth and Round-trip propagation time") congestion control algorithm.
+If you are on Linux, enable the [BBR](https://www.ietf.org/archive/id/draft-cardwell-iccrg-bbr-congestion-control-01.html) ("Bottleneck Bandwidth and Round-trip propagation time") congestion control algorithm.
 
 ```shell
-# Check if BBR is enabled.
+# Check if BBR is enabled (Linux only).
 make bbr-check
 
-# If BBR is not enabled then enable it.
+# If BBR is not enabled then enable it (Linux only).
 make bbr-enable
 ```
 
@@ -119,17 +120,20 @@ celestia-appd start
 
 # Publish blob data to the local testnet.
 celestia-appd tx blob pay-for-blob 0x00010203040506070809 0x48656c6c6f2c20576f726c6421 \
-	--chain-id private \
+	--chain-id test \
 	--from validator \
 	--keyring-backend test \
 	--fees 21000utia \
 	--yes
+
+# Query the tx
+celestia-appd query tx <txhash from previous command>
 ```
 
 ### Join a public Celestia network
 
 For instructions on running a node on Celestia's public networks, refer to the
-[consensus node](https://docs.celestia.org/how-to-guides/consensus-node)
+[consensus node](https://docs.celestia.org/operate/consensus-validators/consensus-node/)
 guide in the docs.
 
 > [!NOTE]
@@ -142,11 +146,11 @@ If you import celestia-app as a Go module, you may need to add some Go module `r
 
 ### Usage in tests
 
-If you are running celestia-app in tests, you may want to override the `timeout_commit` to produce blocks faster. By default, a celestia-app chain with app version >= 3 will produce blocks every ~6 seconds. To produce blocks faster, you can override the `timeout_commit` with the `--timeout-commit` flag.
+If you are running celestia-app in tests, you may want to override the `delayed_precommit_timeout` to produce blocks faster. By default, a celestia-app chain with app version >= 3 will produce blocks every ~6 seconds. To produce blocks faster, you can override the `delayed_precommit_timeout` with the `--delayed-precommit-timeout` flag.
 
 ```shell
-# Start celestia-appd with a one-second timeout commit.
-celestia-appd start --timeout-commit 1s
+# Start celestia-appd with a one-second block time.
+celestia-appd start --delayed-precommit-timeout 1s
 ```
 
 ## Server Architecture
@@ -179,7 +183,6 @@ This repo contains multiple go modules. When using it, rename `go.work.example` 
 
 ### Tools
 
-1. Install [golangci-lint](https://golangci-lint.run/welcome/install) 2.1.2
 1. Install [markdownlint](https://github.com/DavidAnson/markdownlint) 0.39.0
 1. Install [hadolint](https://github.com/hadolint/hadolint)
 1. Install [yamllint](https://yamllint.readthedocs.io/en/stable/quickstart.html)
@@ -218,7 +221,9 @@ The source of truth for dependencies is the `go.mod` file but the table below de
 
 | celestia-app | celestia-core      | cosmos-sdk                 |
 |--------------|--------------------|----------------------------|
-| `main`       | `main`             | `release/v0.50.x-celestia` |
+| `main`       | `main`             | `release/v0.52.x-celestia` |
+| `v6.x`       | `v0.39.x-celestia` | `release/v0.51.x-celestia` |
+| `v5.x`       | `v0.38.x-celestia` | `release/v0.50.x-celestia` |
 | `v4.x`       | `v0.38.x-celestia` | `release/v0.50.x-celestia` |
 | `v3.x`       | `v0.34.x-celestia` | `release/v0.46.x-celestia` |
 
@@ -231,3 +236,4 @@ The source of truth for dependencies is the `go.mod` file but the table below de
 | 2024/7/1   | [Informal Systems](https://informal.systems/) | [v2.0.0-rc1](https://github.com/celestiaorg/celestia-app/releases/tag/v2.0.0-rc1)                        | [informal-systems-v2.pdf](docs/audit/informal-systems-v2.pdf)                         |
 | 2024/9/20  | [Informal Systems](https://informal.systems/) | [306c587](https://github.com/celestiaorg/celestia-app/commit/306c58745d135d31c3777a1af2f58d50adbd32c8)   | [informal-systems-authored-blobs.pdf](docs/audit/informal-systems-authored-blobs.pdf) |
 | 2025/6/24  | [Informal Systems](https://informal.systems/) | [139bad2](https://github.com/celestiaorg/celestia-core/commit/139bad235a379599670f30d5e28c637dde4bb17a)  | [informal-systems-recovery.pdf](docs/audit/informal-systems-recovery.pdf)             |
+| 2026/2/6   | [Sherlock](https://www.sherlock.xyz/)         | [d3e13fa](https://github.com/celestiaorg/celestia-app/commit/d3e13fa1844405c2e3b358fe9c5a9a25745b3b19)   | [sherlock-zk-ism.pdf](docs/audit/sherlock-zk-ism.pdf)                                 |

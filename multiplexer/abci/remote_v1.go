@@ -2,6 +2,7 @@ package abci
 
 import (
 	"context"
+	"fmt"
 	"math"
 
 	abciv2 "github.com/cometbft/cometbft/abci/types"
@@ -199,7 +200,9 @@ func (a *RemoteABCIClientV1) FinalizeBlock(req *abciv2.RequestFinalizeBlock) (*a
 	// set the retain height, used in commit noop
 	a.commitRetainLastHeight = commitResp.RetainHeight
 	// get the app version from the end block response
-	a.endBlockConsensusAppVersion = endBlockResp.GetConsensusParamUpdates().Version.AppVersion
+	if cp := endBlockResp.GetConsensusParamUpdates(); cp != nil && cp.GetVersion() != nil {
+		a.endBlockConsensusAppVersion = cp.GetVersion().AppVersion
+	}
 
 	return &abciv2.ResponseFinalizeBlock{
 		Events:                events,
@@ -468,6 +471,11 @@ func (a *RemoteABCIClientV1) VerifyVoteExtension(req *abciv2.RequestVerifyVoteEx
 // ExtendVote implements abciv2.ABCI
 func (a *RemoteABCIClientV1) ExtendVote(ctx context.Context, req *abciv2.RequestExtendVote) (*abciv2.ResponseExtendVote, error) {
 	return &abciv2.ResponseExtendVote{}, nil
+}
+
+// QuerySequence implements abciv2.ABCI
+func (a *RemoteABCIClientV1) QuerySequence(_ context.Context, _ *abciv2.RequestQuerySequence) (*abciv2.ResponseQuerySequence, error) {
+	return &abciv2.ResponseQuerySequence{}, fmt.Errorf("RemoteABCIClientV1 does not support QuerySequence")
 }
 
 // abciEventV1ToV2 converts a slice of abciv1.Event to a slice of abciv2.Event.

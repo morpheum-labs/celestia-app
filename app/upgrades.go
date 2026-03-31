@@ -3,12 +3,14 @@ package app
 import (
 	"context"
 	"fmt"
-	"time"
 
+	storetypes "cosmossdk.io/store/types"
 	upgradetypes "cosmossdk.io/x/upgrade/types"
-	"github.com/celestiaorg/celestia-app/v6/pkg/appconsts"
-	blobtypes "github.com/celestiaorg/celestia-app/v6/x/blob/types"
-	minfeetypes "github.com/celestiaorg/celestia-app/v6/x/minfee/types"
+	"github.com/celestiaorg/celestia-app/v8/pkg/appconsts"
+	blobtypes "github.com/celestiaorg/celestia-app/v8/x/blob/types"
+	fibretypes "github.com/celestiaorg/celestia-app/v8/x/fibre/types"
+	minfeetypes "github.com/celestiaorg/celestia-app/v8/x/minfee/types"
+	valaddrtypes "github.com/celestiaorg/celestia-app/v8/x/valaddr/types"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/cosmos/cosmos-sdk/types/module"
 	authtypes "github.com/cosmos/cosmos-sdk/x/auth/types"
@@ -73,20 +75,14 @@ func (app App) RegisterUpgradeHandlers() {
 		upgradeName,
 		func(ctx context.Context, _ upgradetypes.Plan, fromVM module.VersionMap) (module.VersionMap, error) {
 			sdkCtx := sdk.UnwrapSDKContext(ctx)
+			sdkCtx.Logger().Info("running upgrade handler", "upgrade-name", upgradeName)
 
-			start := time.Now()
-			sdkCtx.Logger().Info("running upgrade handler", "upgrade-name", upgradeName, "start", start)
-
-			err := app.setICAHostParams(sdkCtx)
-			if err != nil {
-				sdkCtx.Logger().Error("failed to set ica/host submodule params", "error", err)
+			if err := app.SetMaxExpectedTimePerBlock(sdkCtx); err != nil {
+				sdkCtx.Logger().Error("failed to set MaxExpectedTimePerBlock", "error", err)
 				return nil, err
 			}
-			// TODO: add any other migrations here.
 
-			sdkCtx.Logger().Info("finished to upgrade", "upgrade-name", upgradeName, "duration-sec", time.Since(start).Seconds())
-
-			return fromVM, nil
+			return app.ModuleManager.RunMigrations(ctx, app.configurator, fromVM)
 		},
 	)
 
@@ -96,23 +92,26 @@ func (app App) RegisterUpgradeHandlers() {
 	}
 
 	if upgradeInfo.Name == upgradeName && !app.UpgradeKeeper.IsSkipHeight(upgradeInfo.Height) { //nolint:staticcheck
-		// TODO: Apply any store upgrades here.
+		storeUpgrades := storetypes.StoreUpgrades{
+			Added: []string{
+				fibretypes.StoreKey,
+				valaddrtypes.StoreKey,
+			},
+		}
+
+		// configure store loader that checks if version == upgradeHeight and applies store upgrades
+		app.SetStoreLoader(upgradetypes.UpgradeStoreLoader(upgradeInfo.Height, &storeUpgrades))
 	}
 }
 
-// setICAHostParams sets the ICA host params to the values defined in CIP-14.
-// This is needed because the ICA host params were previously stored in x/params
-// and in ibc-go v8 they were migrated to use a self-managed store.
-//
-// NOTE: the param migrator included in ibc-go v8 does not work as expected
-// because it sets the params to the default values which do not match the
-// values defined in CIP-14.
-func (a App) setICAHostParams(ctx context.Context) error {
-	sdkCtx := sdk.UnwrapSDKContext(ctx)
-	params := icahosttypes.Params{
-		HostEnabled:   true,
-		AllowMessages: IcaAllowMessages(),
+// SetMaxExpectedTimePerBlock sets the IBC connection MaxExpectedTimePerBlock
+// parameter to appconsts.MaxExpectedTimePerBlock. This corrects the previous
+// value of 75 seconds which was based on an outdated 15 second block time.
+func (app App) SetMaxExpectedTimePerBlock(ctx sdk.Context) error {
+	params := ibcconnectiontypes.Params{
+		MaxExpectedTimePerBlock: uint64(appconsts.MaxExpectedTimePerBlock.Nanoseconds()),
 	}
-	a.ICAHostKeeper.SetParams(sdkCtx, params)
+	ctx.Logger().Info(fmt.Sprintf("Setting IBC connection MaxExpectedTimePerBlock to %v", appconsts.MaxExpectedTimePerBlock))
+	app.IBCKeeper.ConnectionKeeper.SetParams(ctx, params)
 	return nil
 }

@@ -13,7 +13,7 @@ import (
 	"sync"
 
 	"cosmossdk.io/log"
-	"github.com/celestiaorg/celestia-app/v6/multiplexer/internal"
+	"github.com/celestiaorg/celestia-app/v8/multiplexer/internal"
 	cmtcfg "github.com/cometbft/cometbft/config"
 	"github.com/cometbft/cometbft/node"
 	"github.com/cometbft/cometbft/p2p"
@@ -78,10 +78,14 @@ type Multiplexer struct {
 	conn *grpc.ClientConn
 	// ctx is the context which is passed to the comet, grpc and api server starting functions.
 	ctx context.Context
-	// g is the waitgroup to which the comet, grpc and api server init functions are added to.
+	// g is the errgroup to which the gRPC server, API server, block event listener, and signal handler are added to.
 	g *errgroup.Group
 	// traceWriter is the trace writer for the multiplexer.
 	traceWriter io.WriteCloser
+	// metrics caches the telemetry.Metrics instance to prevent duplicate
+	// Prometheus collector registration when enableGRPCAndAPIServers is
+	// called more than once (e.g. during a version switch).
+	metrics *telemetry.Metrics
 }
 
 // NewMultiplexer creates a new Multiplexer.
@@ -182,12 +186,11 @@ func (m *Multiplexer) enableGRPCAndAPIServers(app servertypes.Application) error
 		// startAPIServer starts the api server for a native app. If using an embedded app
 		// it will use that instead.
 		if m.svrCfg.API.Enable {
-			metrics, err := startTelemetry(m.svrCfg)
-			if err != nil {
+			if err := m.initTelemetry(); err != nil {
 				return err
 			}
 
-			if err := m.startAPIServer(grpcServer, metrics); err != nil {
+			if err := m.startAPIServer(grpcServer, m.metrics); err != nil {
 				return err
 			}
 		}
@@ -623,8 +626,21 @@ func (m *Multiplexer) stopTraceWriter() error {
 	return m.traceWriter.Close()
 }
 
-func startTelemetry(cfg serverconfig.Config) (*telemetry.Metrics, error) {
-	return telemetry.New(cfg.Telemetry)
+// initTelemetry initializes telemetry if it hasn't been initialized yet.
+// It is idempotent: subsequent calls are no-ops. This prevents "duplicate
+// metrics collector registration attempted" errors when
+// enableGRPCAndAPIServers is called more than once (e.g. during a version
+// switch).
+func (m *Multiplexer) initTelemetry() error {
+	if m.metrics != nil {
+		return nil
+	}
+	metrics, err := telemetry.New(m.svrCfg.Telemetry)
+	if err != nil {
+		return err
+	}
+	m.metrics = metrics
+	return nil
 }
 
 // emitServerInfoMetrics emits server info related metrics using application telemetry.

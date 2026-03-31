@@ -8,11 +8,11 @@ import (
 	"time"
 
 	"cosmossdk.io/log"
-	"github.com/celestiaorg/celestia-app/v6/app"
-	"github.com/celestiaorg/celestia-app/v6/pkg/appconsts"
-	"github.com/celestiaorg/celestia-app/v6/test/util"
-	"github.com/celestiaorg/celestia-app/v6/test/util/random"
-	"github.com/celestiaorg/celestia-app/v6/test/util/testnode"
+	"github.com/celestiaorg/celestia-app/v8/app"
+	"github.com/celestiaorg/celestia-app/v8/pkg/appconsts"
+	"github.com/celestiaorg/celestia-app/v8/test/util"
+	"github.com/celestiaorg/celestia-app/v8/test/util/random"
+	"github.com/celestiaorg/celestia-app/v8/test/util/testnode"
 	cmtcfg "github.com/cometbft/cometbft/config"
 	tmlog "github.com/cometbft/cometbft/libs/log"
 	"github.com/cometbft/cometbft/node"
@@ -20,9 +20,11 @@ import (
 	"github.com/cometbft/cometbft/privval"
 	"github.com/cometbft/cometbft/proxy"
 	"github.com/cometbft/cometbft/rpc/client/local"
+	cmttypes "github.com/cometbft/cometbft/types"
 	tmdbm "github.com/cosmos/cosmos-db"
 	"github.com/cosmos/cosmos-sdk/baseapp"
 	"github.com/cosmos/cosmos-sdk/server"
+	genutiltypes "github.com/cosmos/cosmos-sdk/x/genutil/types"
 	"github.com/stretchr/testify/require"
 )
 
@@ -55,8 +57,9 @@ func TestRun(t *testing.T) {
 	tmCfg := testnode.DefaultTendermintConfig()
 	tmCfg.SetRoot(cfg.ExistingDir)
 
-	appDB, err := tmdbm.NewDB("application", tmdbm.GoLevelDBBackend, tmCfg.DBDir())
+	appDB, err := tmdbm.NewDB("application", tmdbm.BackendType(tmCfg.DBBackend), tmCfg.DBDir())
 	require.NoError(t, err)
+	t.Cleanup(func() { _ = appDB.Close() })
 
 	app := app.New(
 		log.NewNopLogger(),
@@ -76,7 +79,7 @@ func TestRun(t *testing.T) {
 		privval.LoadOrGenFilePV(tmCfg.PrivValidatorKeyFile(), tmCfg.PrivValidatorStateFile()),
 		nodeKey,
 		proxy.NewLocalClientCreator(cmtApp),
-		node.DefaultGenesisDocProviderFunc(tmCfg),
+		getGenDocProvider(tmCfg),
 		cmtcfg.DefaultDBProvider,
 		node.DefaultMetricsProvider(tmCfg.Instrumentation),
 		tmlog.NewNopLogger(),
@@ -98,4 +101,17 @@ func TestRun(t *testing.T) {
 	}, time.Second*10, time.Millisecond*100)
 	require.NoError(t, cometNode.Stop())
 	cometNode.Wait()
+}
+
+// getGenDocProvider returns a function that loads the genesis document from file.
+// This uses the SDK's AppGenesis format and converts it to CometBFT's GenesisDoc,
+// which properly handles the type conversion (e.g., InitialHeight as int64 vs string).
+func getGenDocProvider(cfg *cmtcfg.Config) func() (*cmttypes.GenesisDoc, error) {
+	return func() (*cmttypes.GenesisDoc, error) {
+		appGenesis, err := genutiltypes.AppGenesisFromFile(cfg.GenesisFile())
+		if err != nil {
+			return nil, err
+		}
+		return appGenesis.ToGenesisDoc()
+	}
 }

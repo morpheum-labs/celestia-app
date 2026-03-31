@@ -4,18 +4,18 @@ import (
 	"math"
 	"testing"
 
-	"github.com/celestiaorg/celestia-app/v6/app"
-	"github.com/celestiaorg/celestia-app/v6/app/encoding"
-	"github.com/celestiaorg/celestia-app/v6/pkg/appconsts"
-	"github.com/celestiaorg/celestia-app/v6/pkg/user"
-	"github.com/celestiaorg/celestia-app/v6/test/util/blobfactory"
-	"github.com/celestiaorg/celestia-app/v6/test/util/random"
-	"github.com/celestiaorg/celestia-app/v6/test/util/testfactory"
-	"github.com/celestiaorg/celestia-app/v6/test/util/testnode"
-	"github.com/celestiaorg/celestia-app/v6/x/blob/ante"
-	blob "github.com/celestiaorg/celestia-app/v6/x/blob/types"
-	"github.com/celestiaorg/go-square/v2/share"
-	blobtx "github.com/celestiaorg/go-square/v2/tx"
+	"github.com/celestiaorg/celestia-app/v8/app"
+	"github.com/celestiaorg/celestia-app/v8/app/encoding"
+	"github.com/celestiaorg/celestia-app/v8/pkg/appconsts"
+	"github.com/celestiaorg/celestia-app/v8/pkg/user"
+	"github.com/celestiaorg/celestia-app/v8/test/util/blobfactory"
+	"github.com/celestiaorg/celestia-app/v8/test/util/random"
+	"github.com/celestiaorg/celestia-app/v8/test/util/testfactory"
+	"github.com/celestiaorg/celestia-app/v8/test/util/testnode"
+	"github.com/celestiaorg/celestia-app/v8/x/blob/ante"
+	blob "github.com/celestiaorg/celestia-app/v8/x/blob/types"
+	"github.com/celestiaorg/go-square/v4/share"
+	blobtx "github.com/celestiaorg/go-square/v4/tx"
 	tmproto "github.com/cometbft/cometbft/proto/tendermint/types"
 	"github.com/cometbft/cometbft/proto/tendermint/version"
 	sdk "github.com/cosmos/cosmos-sdk/types"
@@ -152,8 +152,9 @@ func TestBlobShareDecoratorWithMsgExec(t *testing.T) {
 	// blob that can not fit in a square.
 	msgExec := authz.NewMsgExec(sdk.AccAddress{}, []sdk.Msg{
 		&blob.MsgPayForBlobs{
-			Signer:    "celestia...",
-			BlobSizes: []uint32{uint32(math.MaxUint32)},
+			Signer:        "celestia...",
+			BlobSizes:     []uint32{uint32(math.MaxUint32)},
+			ShareVersions: []uint32{uint32(share.ShareVersionZero)},
 		},
 	})
 	require.NoError(t, txBuilder.SetMsgs(&msgExec))

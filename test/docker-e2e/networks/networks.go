@@ -1,24 +1,26 @@
 package networks
 
 import (
-	"celestiaorg/celestia-app/test/docker-e2e/dockerchain"
 	"fmt"
 	"io"
 	"net/http"
 	"testing"
 
-	"github.com/celestiaorg/celestia-app/v6/app"
-	"github.com/celestiaorg/celestia-app/v6/test/util/testnode"
-	celestiadockertypes "github.com/celestiaorg/tastora/framework/docker"
+	tastoratypes "github.com/celestiaorg/tastora/framework/types"
+
+	"github.com/celestiaorg/celestia-app/v8/app"
+	"github.com/celestiaorg/celestia-app/v8/test/util/testnode"
 	tastoracontainertypes "github.com/celestiaorg/tastora/framework/docker/container"
+	celestiadockertypes "github.com/celestiaorg/tastora/framework/docker/cosmos"
 	rpchttp "github.com/cometbft/cometbft/rpc/client/http"
 	"github.com/cosmos/cosmos-sdk/types/module/testutil"
-	"github.com/moby/moby/client"
 	"github.com/stretchr/testify/require"
+
+	"celestiaorg/celestia-app/test/docker-e2e/dockerchain"
 )
 
 // NewConfig returns a configured instance of dockerchain.Config for the specified chain.
-func NewConfig(networkCfg *Config, client *client.Client, network string) (*dockerchain.Config, error) {
+func NewConfig(networkCfg *Config, client tastoratypes.TastoraDockerClient, network string) (*dockerchain.Config, error) {
 	// create minimal config - the genesis will be downloaded by the NewChainBuilder
 	tnCfg := testnode.DefaultConfig()
 	tnCfg.Genesis = tnCfg.Genesis.WithChainID(networkCfg.ChainID)

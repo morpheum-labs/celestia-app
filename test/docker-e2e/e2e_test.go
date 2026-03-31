@@ -3,19 +3,20 @@ package docker_e2e
 import (
 	"context"
 	"fmt"
-	tastoracontainertypes "github.com/celestiaorg/tastora/framework/docker/container"
 	"testing"
 	"time"
 
+	tastoracontainertypes "github.com/celestiaorg/tastora/framework/docker/container"
+
 	"celestiaorg/celestia-app/test/docker-e2e/dockerchain"
-	"github.com/celestiaorg/go-square/v2/share"
+
+	"github.com/celestiaorg/go-square/v4/share"
 	tastoradockertypes "github.com/celestiaorg/tastora/framework/docker"
 	"github.com/celestiaorg/tastora/framework/testutil/wait"
 	tastoratypes "github.com/celestiaorg/tastora/framework/types"
 	rpcclient "github.com/cometbft/cometbft/rpc/client"
 	coretypes "github.com/cometbft/cometbft/rpc/core/types"
 	"github.com/docker/docker/api/types/network"
-	"github.com/moby/moby/client"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 	"go.uber.org/zap"
@@ -28,12 +29,6 @@ const (
 
 	// Liveness check constants
 	defaultBlocksPerValidator = 3 // Minimum blocks each validator should propose for liveness validation
-
-	// Node type constants (matching tastora framework's string representations)
-	validatorNodeTypeString = "val" // String representation of validator nodes
-	fullNodeTypeString      = "fn"  // String representation of full nodes
-
-	homeDir = "/var/cosmos-chain/celestia"
 )
 
 func TestCelestiaTestSuite(t *testing.T) {
@@ -42,16 +37,16 @@ func TestCelestiaTestSuite(t *testing.T) {
 
 type CelestiaTestSuite struct {
 	suite.Suite
-	logger     *zap.Logger
-	client     *client.Client
-	network    string
+	logger      *zap.Logger
+	client      tastoratypes.TastoraDockerClient
+	network     string
 	celestiaCfg *dockerchain.Config // Config used to build the celestia chain, needed for upgrades
 }
 
 func (s *CelestiaTestSuite) SetupSuite() {
 	s.logger = zaptest.NewLogger(s.T())
 	s.logger.Info("Setting up Celestia test suite: " + s.T().Name())
-	s.client, s.network = tastoradockertypes.DockerSetup(s.T())
+	s.client, s.network = tastoradockertypes.Setup(s.T())
 }
 
 // CreateTxSim deploys and starts a txsim container to simulate transactions against the given celestia chain in the test environment.
@@ -61,7 +56,6 @@ func (s *CelestiaTestSuite) CreateTxSim(ctx context.Context, chain tastoratypes.
 	s.Require().NoError(err)
 
 	// Deploy txsim image
-	t.Log("Deploying txsim image")
 	txsimImage := tastoracontainertypes.NewJob(s.logger, s.client, networkName, t.Name(), txsimImage, txSimTag)
 
 	opts := tastoracontainertypes.Options{
@@ -71,8 +65,9 @@ func (s *CelestiaTestSuite) CreateTxSim(ctx context.Context, chain tastoratypes.
 		Binds: []string{chain.GetVolumeName() + ":/celestia-home"},
 	}
 
-	internalHostname, err := chain.GetNodes()[0].GetInternalHostName(ctx)
-	s.Require().NoError(err)
+	networkInfo, err := chain.GetNodes()[0].GetNetworkInfo(ctx)
+	s.Require().NoError(err, "failed to get network info from chain node")
+	internalHostname := networkInfo.Internal.Hostname
 
 	args := []string{
 		"/bin/txsim",
@@ -102,7 +97,7 @@ func (s *CelestiaTestSuite) CreateTxSim(ctx context.Context, chain tastoratypes.
 }
 
 // getNetworkNameFromID resolves the network name given its ID.
-func getNetworkNameFromID(ctx context.Context, cli *client.Client, networkID string) (string, error) {
+func getNetworkNameFromID(ctx context.Context, cli tastoratypes.TastoraDockerClient, networkID string) (string, error) {
 	network, err := cli.NetworkInspect(ctx, networkID, network.InspectOptions{})
 	if err != nil {
 		return "", fmt.Errorf("failed to inspect network %s: %w", networkID, err)
@@ -259,7 +254,7 @@ func (s *CelestiaTestSuite) ensureMinimumBlocks(ctx context.Context, chain tasto
 	return finalStatus.SyncInfo.LatestBlockHeight, nil
 }
 
-// fetchValidatorSets retrieves validator sets at both start and end heights
+// fetchValidatorSets retrieves the validator set at the provided end height
 func (s *CelestiaTestSuite) fetchValidatorSets(ctx context.Context, rpcClient rpcclient.Client, endHeight int64) (*coretypes.ResultValidators, error) {
 	endValidators, err := rpcClient.Validators(ctx, &endHeight, nil, nil)
 	if err != nil {
@@ -356,7 +351,7 @@ func (s *CelestiaTestSuite) validateNodesNotHalted(ctx context.Context, chain ta
 	var haltedNodes []string
 	for i, n := range chain.GetNodes() {
 		// Only check validator nodes for height consistency
-		if n.GetType() != validatorNodeTypeString {
+		if n.GetType() != tastoratypes.NodeTypeValidator {
 			continue
 		}
 

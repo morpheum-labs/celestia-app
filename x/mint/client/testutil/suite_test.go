@@ -7,9 +7,9 @@ import (
 	"time"
 
 	"cosmossdk.io/math"
-	"github.com/celestiaorg/celestia-app/v6/test/util/testnode"
-	"github.com/celestiaorg/celestia-app/v6/x/mint/client/cli"
-	mint "github.com/celestiaorg/celestia-app/v6/x/mint/types"
+	"github.com/celestiaorg/celestia-app/v8/test/util/testnode"
+	"github.com/celestiaorg/celestia-app/v8/x/mint/client/cli"
+	mint "github.com/celestiaorg/celestia-app/v8/x/mint/types"
 	tmcli "github.com/cometbft/cometbft/libs/cli"
 	"github.com/cosmos/cosmos-sdk/client/flags"
 	clitestutil "github.com/cosmos/cosmos-sdk/testutil/cli"
@@ -56,12 +56,12 @@ func (s *IntegrationTestSuite) TestGetCmdQueryInflationRate() {
 		{
 			name: "json output",
 			args: s.jsonArgs(),
-			want: "0.053600000000000000",
+			want: "0.026700000000000000",
 		},
 		{
 			name: "text output",
 			args: s.textArgs(),
-			want: "0.053600000000000000",
+			want: "0.026700000000000000",
 		},
 	}
 

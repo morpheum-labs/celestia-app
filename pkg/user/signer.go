@@ -6,11 +6,11 @@ import (
 	"fmt"
 
 	"cosmossdk.io/core/address"
-	"github.com/celestiaorg/celestia-app/v6/app/params"
-	"github.com/celestiaorg/celestia-app/v6/pkg/appconsts"
-	blobtypes "github.com/celestiaorg/celestia-app/v6/x/blob/types"
-	"github.com/celestiaorg/go-square/v2/share"
-	blobtx "github.com/celestiaorg/go-square/v2/tx"
+	"github.com/celestiaorg/celestia-app/v8/app/params"
+	"github.com/celestiaorg/celestia-app/v8/pkg/appconsts"
+	blobtypes "github.com/celestiaorg/celestia-app/v8/x/blob/types"
+	"github.com/celestiaorg/go-square/v4/share"
+	blobtx "github.com/celestiaorg/go-square/v4/tx"
 	"github.com/cosmos/cosmos-sdk/client"
 	addresscodec "github.com/cosmos/cosmos-sdk/codec/address"
 	"github.com/cosmos/cosmos-sdk/crypto/keyring"
@@ -30,9 +30,10 @@ type Signer struct {
 	enc          client.TxConfig
 	addressCodec address.Codec
 	chainID      string
-	// set of accounts that the signer can manage. Should match the keys on the keyring
+	// accounts is a map from accountName to account. The signer can manage these accounts. They should match the keys on the keyring.
 	accounts            map[string]*Account
 	addressToAccountMap map[string]string
+	signMode            signing.SignMode
 }
 
 // NewSigner returns a new signer using the provided keyring
@@ -46,6 +47,7 @@ func NewSigner(keys keyring.Keyring, encCfg client.TxConfig, chainID string, acc
 		addressCodec:        addresscodec.NewBech32Codec(params.Bech32PrefixAccAddr),
 		accounts:            make(map[string]*Account),
 		addressToAccountMap: make(map[string]string),
+		signMode:            defaultSignMode,
 	}
 
 	for _, acc := range accounts {
@@ -62,6 +64,12 @@ func NewSigner(keys keyring.Keyring, encCfg client.TxConfig, chainID string, acc
 	}
 
 	return s, nil
+}
+
+// WithSignMode sets the sign mode for the signer.
+func (s *Signer) WithSignMode(signMode signing.SignMode) *Signer {
+	s.signMode = signMode
+	return s
 }
 
 // populateAddressToAccountMap retrieves keys from the keyring and maps their addresses to account names in the signer.
@@ -189,11 +197,9 @@ func (s *Signer) accountNameByAddress(address sdktypes.AccAddress) string {
 }
 
 func (s *Signer) Accounts() []*Account {
-	accounts := make([]*Account, len(s.accounts))
-	i := 0
+	accounts := make([]*Account, 0, len(s.accounts))
 	for _, acc := range s.accounts {
-		accounts[i] = acc
-		i++
+		accounts = append(accounts, acc)
 	}
 	return accounts
 }
@@ -286,7 +292,7 @@ func (s *Signer) signTransaction(builder client.TxBuilder) (string, uint64, erro
 	// a dry run of the signing data
 	err = builder.SetSignatures(signing.SignatureV2{
 		Data: &signing.SingleSignatureData{
-			SignMode:  defaultSignMode,
+			SignMode:  s.signMode,
 			Signature: nil,
 		},
 		PubKey:   account.pubKey,
@@ -303,7 +309,7 @@ func (s *Signer) signTransaction(builder client.TxBuilder) (string, uint64, erro
 
 	err = builder.SetSignatures(signing.SignatureV2{
 		Data: &signing.SingleSignatureData{
-			SignMode:  defaultSignMode,
+			SignMode:  s.signMode,
 			Signature: signature,
 		},
 		PubKey:   account.pubKey,
@@ -330,11 +336,11 @@ func (s *Signer) createSignature(builder client.TxBuilder, account *Account, seq
 		PubKey:        account.pubKey,
 	}
 
-	bytesToSign, err := authsigning.GetSignBytesAdapter(context.Background(), s.enc.SignModeHandler(), defaultSignMode, signerData, builder.GetTx())
+	bytesToSign, err := authsigning.GetSignBytesAdapter(context.Background(), s.enc.SignModeHandler(), s.signMode, signerData, builder.GetTx())
 	if err != nil {
 		return nil, fmt.Errorf("error getting sign bytes: %w", err)
 	}
-	signature, _, err := s.keys.Sign(account.name, bytesToSign, defaultSignMode)
+	signature, _, err := s.keys.Sign(account.name, bytesToSign, s.signMode)
 	if err != nil {
 		return nil, fmt.Errorf("error signing bytes: %w", err)
 	}

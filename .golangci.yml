@@ -6,12 +6,12 @@ linters:
     - copyloopvar
     - gocritic
     - misspell
+    - modernize
     - nakedret
     - prealloc
     - revive
     - staticcheck
     - unconvert
-    - gocritic
   exclusions:
     generated: lax
     presets:

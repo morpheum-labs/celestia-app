@@ -9,10 +9,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/celestiaorg/celestia-app/v6/pkg/appconsts"
-	"github.com/celestiaorg/celestia-app/v6/x/blob/types"
-	"github.com/celestiaorg/go-square/v2/share"
-	"github.com/celestiaorg/go-square/v2/tx"
+	"github.com/celestiaorg/celestia-app/v8/pkg/appconsts"
+	"github.com/celestiaorg/celestia-app/v8/x/blob/types"
+	"github.com/celestiaorg/go-square/v4/share"
+	"github.com/celestiaorg/go-square/v4/tx"
 	"github.com/cosmos/cosmos-sdk/client"
 	"github.com/cosmos/cosmos-sdk/client/flags"
 	"github.com/cosmos/cosmos-sdk/client/input"
@@ -167,18 +167,19 @@ func getBlobFromArguments(namespaceIDArg, blobArg string, namespaceVersion, shar
 		return nil, err
 	}
 	hexStr := strings.TrimPrefix(blobArg, "0x")
-	rawblob, err := hex.DecodeString(hexStr)
+	rawBlob, err := hex.DecodeString(hexStr)
 	if err != nil {
 		return nil, fmt.Errorf("failure to decode hex blob value %s: %s", hexStr, err.Error())
 	}
 
 	switch shareVersion {
 	case share.ShareVersionZero:
-		return types.NewV0Blob(namespace, rawblob)
+		return types.NewV0Blob(namespace, rawBlob)
 	case share.ShareVersionOne:
-		return types.NewV1Blob(namespace, rawblob, signer)
+		return types.NewV1Blob(namespace, rawBlob, signer)
 	default:
-		return nil, fmt.Errorf("share version %d is not supported", shareVersion)
+		return nil, fmt.Errorf("share version %d is not supported; supported versions are: %d, %d",
+			shareVersion, share.ShareVersionZero, share.ShareVersionOne)
 	}
 }
 
@@ -193,12 +194,13 @@ func getNamespace(namespaceID []byte, namespaceVersion uint8) (share.Namespace, 
 		id = append(id, namespaceID...)
 		return share.NewNamespace(namespaceVersion, id)
 	default:
-		return share.Namespace{}, fmt.Errorf("namespace version %d is not supported", namespaceVersion)
+		return share.Namespace{}, fmt.Errorf("namespace version %d is not supported; supported versions are: %d",
+			namespaceVersion, share.NamespaceVersionZero)
 	}
 }
 
 // broadcastPFB creates the new PFB message type that will later be broadcast to tendermint nodes
-// this private func is used in CmdPayForBlob
+// this private function is used in CmdPayForBlob
 func broadcastPFB(cmd *cobra.Command, b ...*share.Blob) error {
 	clientCtx, err := client.GetClientTxContext(cmd)
 	if err != nil {
@@ -243,7 +245,7 @@ func broadcastPFB(cmd *cobra.Command, b ...*share.Blob) error {
 // cosmos-sdk cli argument parsing code with the given set of messages. It will also simulate gas
 // requirements if necessary. It will return an error upon failure.
 //
-// NOTE: Copy paste forked from the cosmos-sdk so that we can wrap the PFB with
+// NOTE: Copy-paste forked from the cosmos-sdk so that we can wrap the PFB with
 // a blob while still using all of the normal cli parsing code
 func writeTx(clientCtx client.Context, txf sdktx.Factory, msgs ...sdk.Msg) ([]byte, error) {
 	if clientCtx.GenerateOnly {
@@ -288,7 +290,7 @@ func writeTx(clientCtx client.Context, txf sdktx.Factory, msgs ...sdk.Msg) ([]by
 		ok, err := input.GetConfirmation("confirm transaction before signing and broadcasting", buf, os.Stderr)
 
 		if err != nil || !ok {
-			_, _ = fmt.Fprintf(os.Stderr, "%s\n", "cancelled transaction")
+			_, _ = fmt.Fprintf(os.Stderr, "%s\n", "transaction cancelled")
 			return nil, err
 		}
 	}

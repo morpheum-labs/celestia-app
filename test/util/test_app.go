@@ -9,11 +9,11 @@ import (
 
 	"cosmossdk.io/log"
 	"cosmossdk.io/math"
-	"github.com/celestiaorg/celestia-app/v6/app"
-	"github.com/celestiaorg/celestia-app/v6/app/params"
-	"github.com/celestiaorg/celestia-app/v6/pkg/appconsts"
-	"github.com/celestiaorg/celestia-app/v6/test/util/testfactory"
-	"github.com/celestiaorg/celestia-app/v6/test/util/testnode"
+	"github.com/celestiaorg/celestia-app/v8/app"
+	"github.com/celestiaorg/celestia-app/v8/app/params"
+	"github.com/celestiaorg/celestia-app/v8/pkg/appconsts"
+	"github.com/celestiaorg/celestia-app/v8/test/util/testfactory"
+	"github.com/celestiaorg/celestia-app/v8/test/util/testnode"
 	abci "github.com/cometbft/cometbft/abci/types"
 	"github.com/cometbft/cometbft/crypto/ed25519"
 	tmproto "github.com/cometbft/cometbft/proto/tendermint/types"
@@ -51,7 +51,7 @@ func init() {
 type EmptyAppOptions struct{}
 
 // Get implements AppOptions
-func (ao EmptyAppOptions) Get(_ string) interface{} {
+func (ao EmptyAppOptions) Get(_ string) any {
 	return nil
 }
 
@@ -215,6 +215,18 @@ func genesisStateWithValSet(
 		if err != nil {
 			panic(err)
 		}
+		rate, err := math.LegacyNewDecFromStr("0.05")
+		if err != nil {
+			panic(err)
+		}
+		maxRate, err := math.LegacyNewDecFromStr("0.2")
+		if err != nil {
+			panic(err)
+		}
+		maxChangeRate, err := math.LegacyNewDecFromStr("1")
+		if err != nil {
+			panic(err)
+		}
 		validator := stakingtypes.Validator{
 			OperatorAddress:   sdk.ValAddress(val.Address).String(),
 			ConsensusPubkey:   pkAny,
@@ -225,7 +237,7 @@ func genesisStateWithValSet(
 			Description:       stakingtypes.Description{},
 			UnbondingHeight:   int64(0),
 			UnbondingTime:     time.Unix(0, 0).UTC(),
-			Commission:        stakingtypes.NewCommission(math.LegacyZeroDec(), math.LegacyZeroDec(), math.LegacyZeroDec()),
+			Commission:        stakingtypes.NewCommission(rate, maxRate, maxChangeRate),
 			MinSelfDelegation: math.ZeroInt(),
 		}
 		validators = append(validators, validator)

@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/celestiaorg/celestia-app/v6/app/ante"
-	"github.com/celestiaorg/celestia-app/v6/pkg/appconsts"
-	"github.com/celestiaorg/celestia-app/v6/pkg/da"
-	"github.com/celestiaorg/go-square/v2/share"
+	"github.com/celestiaorg/celestia-app/v8/app/ante"
+	"github.com/celestiaorg/celestia-app/v8/pkg/appconsts"
+	"github.com/celestiaorg/celestia-app/v8/pkg/da"
+	"github.com/celestiaorg/go-square/v4/share"
 	abci "github.com/cometbft/cometbft/abci/types"
 	"github.com/cosmos/cosmos-sdk/telemetry"
 	sdk "github.com/cosmos/cosmos-sdk/types"
@@ -54,7 +54,7 @@ func (app *App) PrepareProposalHandler(ctx sdk.Context, req *abci.RequestPrepare
 	// Erasure encode the data square to create the extended data square (eds).
 	// Note: uses the nmt wrapper to construct the tree. See
 	// pkg/wrapper/nmt_wrapper.go for more information.
-	eds, err := da.ExtendShares(share.ToBytes(dataSquare))
+	eds, err := da.ExtendSharesWithTreePool(share.ToBytes(dataSquare), app.TreePool())
 	if err != nil {
 		app.Logger().Error("failure to erasure the data square while creating a proposal block", "error", err.Error())
 		return nil, fmt.Errorf("failure to erasure the data square while creating a proposal block: %w", err)
@@ -66,12 +66,17 @@ func (app *App) PrepareProposalHandler(ctx sdk.Context, req *abci.RequestPrepare
 		return nil, fmt.Errorf("failure to create new data availability header: %w", err)
 	}
 
+	squareSize, err := dataSquare.Size()
+	if err != nil {
+		return nil, fmt.Errorf("failure to get data square size: %w", err)
+	}
+
 	// Tendermint doesn't need to use any of the erasure data because only the
 	// protobuf encoded version of the block data is gossiped. Therefore, the
 	// eds is not returned here.
 	return &abci.ResponsePrepareProposal{
 		Txs:          txs,
-		SquareSize:   uint64(dataSquare.Size()),
+		SquareSize:   uint64(squareSize),
 		DataRootHash: dah.Hash(), // also known as the data root
 	}, nil
 }

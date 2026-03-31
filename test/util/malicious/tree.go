@@ -3,10 +3,10 @@ package malicious
 import (
 	"fmt"
 
-	"github.com/celestiaorg/celestia-app/v6/pkg/appconsts"
-	"github.com/celestiaorg/celestia-app/v6/pkg/wrapper"
-	"github.com/celestiaorg/go-square/v2"
-	"github.com/celestiaorg/go-square/v2/share"
+	"github.com/celestiaorg/celestia-app/v8/pkg/appconsts"
+	"github.com/celestiaorg/celestia-app/v8/pkg/wrapper"
+	"github.com/celestiaorg/go-square/v4"
+	"github.com/celestiaorg/go-square/v4/share"
 	"github.com/celestiaorg/nmt"
 	"github.com/celestiaorg/nmt/namespace"
 	"github.com/celestiaorg/rsmt2d"
@@ -45,11 +45,12 @@ func NewConstructor(squareSize uint64, opts ...nmt.Option) rsmt2d.TreeConstructo
 // nmt.Options.
 func (c constructor) NewTree(_ rsmt2d.Axis, axisIndex uint) rsmt2d.Tree {
 	hasher := NewNmtHasher(appconsts.NewBaseHashFunc(), share.NamespaceSize, true)
-	copts := []nmt.Option{
+	copts := make([]nmt.Option, 0, 3+len(c.opts))
+	copts = append(copts,
 		nmt.CustomHasher(hasher),
 		nmt.NamespaceIDSize(share.NamespaceSize),
 		nmt.IgnoreMaxNamespace(true),
-	}
+	)
 	copts = append(copts, c.opts...)
 	nmtTree := nmt.New(appconsts.NewBaseHashFunc(), copts...)
 	maliciousTree := &BlindTree{nmtTree}
@@ -63,7 +64,10 @@ func ExtendShares(s [][]byte) (*rsmt2d.ExtendedDataSquare, error) {
 	if !square.IsPowerOfTwo(len(s)) {
 		return nil, fmt.Errorf("number of shares is not a power of 2: got %d", len(s))
 	}
-	squareSize := square.Size(len(s))
+	squareSize, err := square.Size(len(s))
+	if err != nil {
+		return nil, err
+	}
 
 	// here we construct a tree
 	// Note: uses the nmt wrapper to construct the tree.

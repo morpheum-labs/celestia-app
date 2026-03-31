@@ -2,28 +2,33 @@ package app_test
 
 import (
 	"bytes"
+	"crypto/rand"
 	"fmt"
 	"testing"
 	"time"
 
-	"github.com/celestiaorg/celestia-app/v6/app"
-	"github.com/celestiaorg/celestia-app/v6/app/encoding"
-	"github.com/celestiaorg/celestia-app/v6/pkg/appconsts"
-	"github.com/celestiaorg/celestia-app/v6/pkg/da"
-	"github.com/celestiaorg/celestia-app/v6/pkg/user"
-	testutil "github.com/celestiaorg/celestia-app/v6/test/util"
-	"github.com/celestiaorg/celestia-app/v6/test/util/blobfactory"
-	"github.com/celestiaorg/celestia-app/v6/test/util/random"
-	"github.com/celestiaorg/celestia-app/v6/test/util/testfactory"
-	"github.com/celestiaorg/celestia-app/v6/test/util/testnode"
-	blobtypes "github.com/celestiaorg/celestia-app/v6/x/blob/types"
-	"github.com/celestiaorg/go-square/v2"
-	"github.com/celestiaorg/go-square/v2/share"
-	"github.com/celestiaorg/go-square/v2/tx"
+	"github.com/celestiaorg/celestia-app/v8/app"
+	"github.com/celestiaorg/celestia-app/v8/app/encoding"
+	"github.com/celestiaorg/celestia-app/v8/pkg/appconsts"
+	"github.com/celestiaorg/celestia-app/v8/pkg/da"
+	"github.com/celestiaorg/celestia-app/v8/pkg/user"
+	testutil "github.com/celestiaorg/celestia-app/v8/test/util"
+	"github.com/celestiaorg/celestia-app/v8/test/util/blobfactory"
+	"github.com/celestiaorg/celestia-app/v8/test/util/random"
+	"github.com/celestiaorg/celestia-app/v8/test/util/testfactory"
+	"github.com/celestiaorg/celestia-app/v8/test/util/testnode"
+	blobtypes "github.com/celestiaorg/celestia-app/v8/x/blob/types"
+	fibretypes "github.com/celestiaorg/celestia-app/v8/x/fibre/types"
+	"github.com/celestiaorg/go-square/v4"
+	"github.com/celestiaorg/go-square/v4/share"
+	"github.com/celestiaorg/go-square/v4/tx"
 	abci "github.com/cometbft/cometbft/abci/types"
 	tmproto "github.com/cometbft/cometbft/proto/tendermint/types"
 	coretypes "github.com/cometbft/cometbft/types"
+	"github.com/cosmos/cosmos-sdk/client"
+	"github.com/cosmos/cosmos-sdk/crypto/keys/secp256k1"
 	sdk "github.com/cosmos/cosmos-sdk/types"
+	banktypes "github.com/cosmos/cosmos-sdk/x/bank/types"
 	"github.com/stretchr/testify/require"
 )
 
@@ -209,7 +214,7 @@ func TestProcessProposal(t *testing.T) {
 				b[share.NamespaceSize] ^= 0x01
 				updatedShare, err := share.NewShare(b)
 				require.NoError(t, err)
-				dataSquare[1] = *updatedShare
+				dataSquare[1] = updatedShare
 
 				eds, err := da.ExtendShares(share.ToBytes(dataSquare))
 				require.NoError(t, err)
@@ -317,4 +322,324 @@ func calculateNewDataHash(t *testing.T, txs [][]byte) []byte {
 	dah, err := da.NewDataAvailabilityHeader(eds)
 	require.NoError(t, err)
 	return dah.Hash()
+}
+
+func TestProcessProposal_ProposalWithInconsistentBlobTxFails(t *testing.T) {
+	enc := encoding.MakeConfig(app.ModuleEncodingRegisters...)
+	accounts := testfactory.GenerateAccounts(2)
+	testApp, kr := testutil.SetupTestAppWithGenesisValSet(app.DefaultConsensusParams(), accounts...)
+	infos := queryAccountInfo(testApp, accounts, kr)
+	signer, err := user.NewSigner(kr, enc.TxConfig, testutil.ChainID, user.NewAccount(accounts[0], infos[0].AccountNum, infos[0].Sequence))
+	require.NoError(t, err)
+
+	ns := share.MustNewV0Namespace(bytes.Repeat([]byte{1}, share.NamespaceVersionZeroIDSize))
+	blobTxBytes := blobfactory.RandBlobTxsWithNamespacesAndSigner(signer, []share.Namespace{ns}, []int{100})[0]
+
+	blobTx, isBlobTx, err := tx.UnmarshalBlobTx(blobTxBytes)
+	require.NoError(t, err)
+	require.True(t, isBlobTx)
+
+	// run CheckTx to populate the cache with the original blob hash
+	checkTxResp, err := testApp.CheckTx(&abci.RequestCheckTx{Tx: blobTxBytes, Type: abci.CheckTxType_New})
+	require.NoError(t, err)
+	require.Equal(t, uint32(0), checkTxResp.Code, "CheckTx should pass: %s", checkTxResp.Log)
+
+	t.Run("Proposal with inconsistent blob tx fails", func(t *testing.T) {
+		// replace the blob with a different one (same namespace, different data)
+		inconsistentBlob, err := share.NewBlob(ns, bytes.Repeat([]byte{0xDE, 0xAD}, 50), share.ShareVersionZero, nil)
+		require.NoError(t, err)
+		inconsistentBlobTxBytes, err := tx.MarshalBlobTx(blobTx.Tx, inconsistentBlob)
+		require.NoError(t, err)
+
+		res, err := testApp.ProcessProposal(&abci.RequestProcessProposal{
+			Time:         time.Now(),
+			Height:       testApp.LastBlockHeight() + 1,
+			Txs:          [][]byte{inconsistentBlobTxBytes},
+			DataRootHash: calculateNewDataHash(t, [][]byte{inconsistentBlobTxBytes}),
+			SquareSize:   2,
+		})
+		require.NoError(t, err)
+		require.Equal(t, abci.ResponseProcessProposal_REJECT, res.Status, "ProcessProposal should reject inconsistent blob tx")
+	})
+
+	t.Run("Original blob proposal succeeds", func(t *testing.T) {
+		res, err := testApp.ProcessProposal(&abci.RequestProcessProposal{
+			Time:         time.Now(),
+			Height:       testApp.LastBlockHeight() + 1,
+			Txs:          [][]byte{blobTxBytes},
+			DataRootHash: calculateNewDataHash(t, [][]byte{blobTxBytes}), // original data hash
+			SquareSize:   2,
+		})
+		require.NoError(t, err)
+		require.Equal(t, abci.ResponseProcessProposal_ACCEPT, res.Status, "ProcessProposal should accept original blob")
+	})
+}
+
+func TestProcessProposalCappingNumberOfMessages(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping process proposal capping number of messages test in short mode.")
+	}
+
+	// Create enough accounts so each sends exactly one tx (avoids sequence collisions).
+	numberOfAccounts := 2000
+	accounts := testfactory.GenerateAccounts(numberOfAccounts)
+	consensusParams := app.DefaultConsensusParams()
+	testApp, kr := testutil.SetupTestAppWithGenesisValSetAndMaxSquareSize(consensusParams, 128, accounts...)
+	enc := encoding.MakeConfig(app.ModuleEncodingRegisters...)
+
+	addrs := make([]sdk.AccAddress, 0, numberOfAccounts)
+	signers := make([]*user.Signer, 0, numberOfAccounts)
+	accs := make([]sdk.AccountI, 0, numberOfAccounts)
+	for index, account := range accounts {
+		addr := testfactory.GetAddress(kr, account)
+		addrs = append(addrs, addr)
+		acc := testutil.DirectQueryAccount(testApp, addrs[index])
+		accs = append(accs, acc)
+		signer, err := user.NewSigner(kr, enc.TxConfig, testutil.ChainID, user.NewAccount(account, acc.GetAccountNumber(), acc.GetSequence()))
+		require.NoError(t, err)
+		signers = append(signers, signer)
+	}
+
+	accountIndex := 0
+
+	// Generate MaxSDKMessages+1 MsgSend txs.
+	numMsgSends := appconsts.MaxSDKMessages + 1
+	msgSendTxs := make([][]byte, 0, numMsgSends)
+	for range numMsgSends {
+		msg := banktypes.NewMsgSend(
+			addrs[accountIndex],
+			testnode.RandomAddress().(sdk.AccAddress),
+			sdk.NewCoins(sdk.NewInt64Coin(appconsts.BondDenom, 10)),
+		)
+		rawTx, _, err := signers[accountIndex].CreateTx([]sdk.Msg{msg}, user.SetGasLimit(1000000), user.SetFee(10))
+		require.NoError(t, err)
+		msgSendTxs = append(msgSendTxs, rawTx)
+		accountIndex++
+	}
+
+	// Generate MaxPFBMessages+1 PFB blob txs.
+	numPFBs := appconsts.MaxPFBMessages + 1
+	pfbTxs := make([][]byte, 0, numPFBs)
+	randomBytes := make([]byte, 2000)
+	_, err := rand.Read(randomBytes)
+	require.NoError(t, err)
+	for range numPFBs {
+		blob, err := share.NewBlob(share.RandomNamespace(), randomBytes, 1, accs[accountIndex].GetAddress().Bytes())
+		require.NoError(t, err)
+		blobTx, _, err := signers[accountIndex].CreatePayForBlobs(accounts[accountIndex], []*share.Blob{blob}, user.SetGasLimit(2549760000), user.SetFee(10000))
+		require.NoError(t, err)
+		pfbTxs = append(pfbTxs, blobTx)
+		accountIndex++
+	}
+
+	// Generate MaxPayForFibreMessages+1 signed MsgPayForFibre txs.
+	numPFFs := appconsts.MaxPayForFibreMessages + 1
+	pffTxs := make([][]byte, 0, numPFFs)
+	for range numPFFs {
+		pffTxs = append(pffTxs, newSignedPayForFibreTx(t, signers[accountIndex], accounts[accountIndex]))
+		accountIndex++
+	}
+
+	type testCase struct {
+		name           string
+		txs            [][]byte
+		expectedResult abci.ResponseProcessProposal_ProposalStatus
+	}
+
+	testCases := []testCase{
+		{
+			name:           "reject block exceeding MaxSDKMessages",
+			txs:            msgSendTxs[:appconsts.MaxSDKMessages+1],
+			expectedResult: abci.ResponseProcessProposal_REJECT,
+		},
+		{
+			name:           "reject block exceeding MaxPFBMessages",
+			txs:            pfbTxs[:appconsts.MaxPFBMessages+1],
+			expectedResult: abci.ResponseProcessProposal_REJECT,
+		},
+		{
+			name:           "reject block exceeding MaxPayForFibreMessages",
+			txs:            pffTxs[:appconsts.MaxPayForFibreMessages+1],
+			expectedResult: abci.ResponseProcessProposal_REJECT,
+		},
+		{
+			name:           "accept block at exactly MaxSDKMessages",
+			txs:            msgSendTxs[:appconsts.MaxSDKMessages],
+			expectedResult: abci.ResponseProcessProposal_ACCEPT,
+		},
+		{
+			name:           "accept block at exactly MaxPFBMessages",
+			txs:            pfbTxs[:appconsts.MaxPFBMessages],
+			expectedResult: abci.ResponseProcessProposal_ACCEPT,
+		},
+		{
+			name:           "accept block at exactly MaxPayForFibreMessages",
+			txs:            pffTxs[:appconsts.MaxPayForFibreMessages],
+			expectedResult: abci.ResponseProcessProposal_ACCEPT,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			var dataRootHash []byte
+			var squareSize uint64
+			if tc.expectedResult == abci.ResponseProcessProposal_ACCEPT {
+				dataSquare, err := square.Construct(tc.txs, appconsts.SquareSizeUpperBound, appconsts.SubtreeRootThreshold)
+				require.NoError(t, err)
+				dataRootHash = calculateNewDataHash(t, tc.txs)
+				ss, err := dataSquare.Size()
+				require.NoError(t, err)
+				squareSize = uint64(ss)
+			}
+
+			// ProcessProposal runs on a branched context that is discarded, so
+			// state changes (like sequence increments) do not persist between sub-tests.
+			resp, err := testApp.ProcessProposal(&abci.RequestProcessProposal{
+				Height:       testApp.LastBlockHeight() + 1,
+				Time:         time.Now(),
+				Txs:          tc.txs,
+				DataRootHash: dataRootHash,
+				SquareSize:   squareSize,
+			})
+			require.NoError(t, err)
+			require.Equal(t, tc.expectedResult, resp.Status)
+		})
+	}
+}
+
+// TestProcessProposalWithPayForFibre verifies that ProcessProposal correctly
+// handles PayForFibre transactions: accept/reject round-trips, rejection of
+// multi-PFF txs, mixed PFF+MsgSend txs, and garbage bytes.
+func TestProcessProposalWithPayForFibre(t *testing.T) {
+	enc := encoding.MakeConfig(app.ModuleEncodingRegisters...)
+	accounts := testfactory.GenerateAccounts(2)
+	testApp, kr := testutil.SetupTestAppWithGenesisValSet(app.DefaultConsensusParams(), accounts...)
+	infos := queryAccountInfo(testApp, accounts, kr)
+
+	signer, err := user.NewSigner(kr, enc.TxConfig, testutil.ChainID,
+		user.NewAccount(accounts[0], infos[0].AccountNum, infos[0].Sequence))
+	require.NoError(t, err)
+	validPFFTx := newSignedPayForFibreTx(t, signer, accounts[0])
+
+	blobSigner, err := user.NewSigner(kr, enc.TxConfig, testutil.ChainID,
+		user.NewAccount(accounts[1], infos[1].AccountNum, infos[1].Sequence))
+	require.NoError(t, err)
+	ns := share.MustNewV0Namespace(bytes.Repeat([]byte{0x02}, share.NamespaceVersionZeroIDSize))
+	blob, err := share.NewBlob(ns, bytes.Repeat([]byte{0x01}, 100), share.ShareVersionZero, nil)
+	require.NoError(t, err)
+	blobTxBytes, _, err := blobSigner.CreatePayForBlobs(accounts[1], []*share.Blob{blob}, user.SetGasLimit(500_000), user.SetFee(1))
+	require.NoError(t, err)
+
+	tests := []struct {
+		name           string
+		txs            func() [][]byte
+		expectedStatus abci.ResponseProcessProposal_ProposalStatus
+	}{
+		{
+			name: "accept block with pay-for-fibre via prepare-process round-trip",
+			txs: func() [][]byte {
+				resp, err := testApp.PrepareProposal(&abci.RequestPrepareProposal{
+					Txs:    [][]byte{validPFFTx},
+					Height: testApp.LastBlockHeight() + 1,
+					Time:   time.Now(),
+				})
+				require.NoError(t, err)
+				return resp.Txs
+			},
+			expectedStatus: abci.ResponseProcessProposal_ACCEPT,
+		},
+		{
+			name: "accept block with blob tx and pay-for-fibre",
+			txs: func() [][]byte {
+				resp, err := testApp.PrepareProposal(&abci.RequestPrepareProposal{
+					Txs:    [][]byte{blobTxBytes, validPFFTx},
+					Height: testApp.LastBlockHeight() + 1,
+					Time:   time.Now(),
+				})
+				require.NoError(t, err)
+				return resp.Txs
+			},
+			expectedStatus: abci.ResponseProcessProposal_ACCEPT,
+		},
+		{
+			name: "reject block with garbage bytes",
+			txs: func() [][]byte {
+				return [][]byte{bytes.Repeat([]byte{0xFF}, 64)}
+			},
+			expectedStatus: abci.ResponseProcessProposal_REJECT,
+		},
+		{
+			name: "reject tx with two MsgPayForFibre",
+			txs: func() [][]byte {
+				return [][]byte{newUnsignedMultiMsgTx(t, enc.TxConfig,
+					newMsgPayForFibre(t), newMsgPayForFibre(t))}
+			},
+			expectedStatus: abci.ResponseProcessProposal_REJECT,
+		},
+		{
+			name: "reject tx with MsgPayForFibre mixed with MsgSend",
+			txs: func() [][]byte {
+				addr := sdk.AccAddress(secp256k1.GenPrivKey().PubKey().Address())
+				sendMsg := banktypes.NewMsgSend(addr, addr,
+					sdk.NewCoins(sdk.NewInt64Coin("utia", 1)))
+				return [][]byte{newUnsignedMultiMsgTx(t, enc.TxConfig,
+					newMsgPayForFibre(t), sendMsg)}
+			},
+			expectedStatus: abci.ResponseProcessProposal_REJECT,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			txs := tc.txs()
+
+			var dataRootHash []byte
+			var squareSize uint64
+			if tc.expectedStatus == abci.ResponseProcessProposal_ACCEPT {
+				dataRootHash = calculateNewDataHash(t, txs)
+				dataSquare, err := square.Construct(txs, appconsts.SquareSizeUpperBound, appconsts.SubtreeRootThreshold)
+				require.NoError(t, err)
+				ss, err := dataSquare.Size()
+				require.NoError(t, err)
+				squareSize = uint64(ss)
+			}
+
+			resp, err := testApp.ProcessProposal(&abci.RequestProcessProposal{
+				Height:       testApp.LastBlockHeight() + 1,
+				Time:         time.Now(),
+				Txs:          txs,
+				DataRootHash: dataRootHash,
+				SquareSize:   squareSize,
+			})
+			require.NoError(t, err)
+			require.Equal(t, tc.expectedStatus, resp.Status)
+		})
+	}
+}
+
+// newMsgPayForFibre creates a MsgPayForFibre with a random signer for testing.
+func newMsgPayForFibre(t *testing.T) *fibretypes.MsgPayForFibre {
+	t.Helper()
+	privKey := secp256k1.GenPrivKey()
+	return blobfactory.NewMsgPayForFibre(t, privKey.PubKey().(*secp256k1.PubKey), "test")
+}
+
+// newUnsignedMultiMsgTx encodes multiple sdk.Msgs into an unsigned SDK tx.
+func newUnsignedMultiMsgTx(t *testing.T, txConfig client.TxConfig, msgs ...sdk.Msg) []byte {
+	t.Helper()
+	builder := txConfig.NewTxBuilder()
+	require.NoError(t, builder.SetMsgs(msgs...))
+	txBytes, err := txConfig.TxEncoder()(builder.GetTx())
+	require.NoError(t, err)
+	return txBytes
+}
+
+// newSignedPayForFibreTx creates a signed MsgPayForFibre transaction.
+func newSignedPayForFibreTx(t *testing.T, signer *user.Signer, account string) []byte {
+	t.Helper()
+	acc := signer.Account(account)
+	msg := blobfactory.NewMsgPayForFibre(t, acc.PubKey().(*secp256k1.PubKey), testutil.ChainID)
+	txBytes, _, err := signer.CreateTx([]sdk.Msg{msg}, user.SetGasLimit(1_000_000), user.SetFee(1))
+	require.NoError(t, err)
+	return txBytes
 }

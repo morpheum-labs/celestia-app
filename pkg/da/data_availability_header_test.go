@@ -2,12 +2,27 @@ package da
 
 import (
 	"bytes"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"testing"
 
-	"github.com/celestiaorg/celestia-app/v6/pkg/appconsts"
-	sh "github.com/celestiaorg/go-square/v2/share"
+	"github.com/celestiaorg/celestia-app/v8/pkg/appconsts"
+	appconstsv5 "github.com/celestiaorg/celestia-app/v8/pkg/appconsts/v5"
+	"github.com/celestiaorg/celestia-app/v8/pkg/wrapper"
+	fibretypes "github.com/celestiaorg/celestia-app/v8/x/fibre/types"
+	sharev2 "github.com/celestiaorg/go-square/v2/share"
+	squarev4 "github.com/celestiaorg/go-square/v4"
+	sh "github.com/celestiaorg/go-square/v4/share"
+	gotx "github.com/celestiaorg/go-square/v4/tx"
+	"github.com/celestiaorg/rsmt2d"
+	"github.com/cosmos/btcutil/bech32"
+	codectypes "github.com/cosmos/cosmos-sdk/codec/types"
+	cosmostx "github.com/cosmos/cosmos-sdk/types/tx"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -24,11 +39,71 @@ func TestNilDataAvailabilityHeaderHashDoesntCrash(t *testing.T) {
 	assert.Equal(t, emptyBytes, new(DataAvailabilityHeader).Hash())
 }
 
+// TestMinDataAvailabilityHeader tests the minimum valid data availability header.
+//
+// This test verifies that MinDataAvailabilityHeader() produces a deterministic hash
+// that matches the expected value. The expected hash is generated through the following process:
+//
+// 1. Create minimum shares: MinShareCount (1) tail padding shares are created
+// 2. Extend shares: The single share is extended using Reed-Solomon encoding to create a 2x2 extended data square
+// 3. Extract roots: Row and column merkle roots are computed from the extended square:
+//   - 2 row roots (one for each row of the extended square)
+//   - 2 column roots (one for each column of the extended square)
+//
+// 4. Compute hash: A binary merkle tree is built from the concatenated row and column roots
+// (rowRoots || columnRoots) to produce the final data availability header hash
+//
+// The expectedHash below (0x3d96b7d2...) represents the merkle root of the concatenated
+// row and column roots from a 2x2 extended data square containing one tail padding share.
+// This hash is deterministic and will always be the same for the minimum data availability header
+// since it represents the smallest possible valid data square in the Celestia network.
 func TestMinDataAvailabilityHeader(t *testing.T) {
 	dah := MinDataAvailabilityHeader()
+	// Expected hash generated from merkle root of (rowRoots || columnRoots)
+	// where the roots come from a 2x2 extended data square with one tail padding share
 	expectedHash := []byte{0x3d, 0x96, 0xb7, 0xd2, 0x38, 0xe7, 0xe0, 0x45, 0x6f, 0x6a, 0xf8, 0xe7, 0xcd, 0xf0, 0xa6, 0x7b, 0xd6, 0xcf, 0x9c, 0x20, 0x89, 0xec, 0xb5, 0x59, 0xc6, 0x59, 0xdc, 0xaa, 0x1f, 0x88, 0x3, 0x53}
 	require.Equal(t, expectedHash, dah.hash)
 	require.NoError(t, dah.ValidateBasic())
+}
+
+type (
+	extendFunc    = func([][]byte) (*rsmt2d.ExtendedDataSquare, error)
+	constructFunc = func(txs [][]byte, appVersion uint64, maxSquareSize int) (*rsmt2d.ExtendedDataSquare, error)
+)
+
+// extendSharesWithPool works exactly the same as ExtendShares,
+// but it uses treePool to reuse the allocs.
+func extendSharesWithPool(s [][]byte) (*rsmt2d.ExtendedDataSquare, error) {
+	treePool, err := wrapper.DefaultPreallocatedTreePool(512)
+	if err != nil {
+		return nil, err
+	}
+	return ExtendSharesWithTreePool(s, treePool)
+}
+
+// constructEDSWithPool works exactly the same as ConstructEDS,
+// but it uses treePool to reuse the allocs.
+func constructEDSWithPool(txs [][]byte, appVersion uint64, maxSquareSize int) (*rsmt2d.ExtendedDataSquare, error) {
+	treePool, err := wrapper.DefaultPreallocatedTreePool(512)
+	if err != nil {
+		return nil, err
+	}
+	return ConstructEDSWithTreePool(txs, appVersion, maxSquareSize, treePool)
+}
+
+func TestMinDataAvailabilityHeaderBackwardsCompatibility(t *testing.T) {
+	for _, extendShares := range []extendFunc{
+		extendSharesWithPool,
+		ExtendShares,
+	} {
+		dahv4 := MinDataAvailabilityHeader()
+		shareV2 := sharev2.ToBytes(sharev2.TailPaddingShares(appconsts.MinShareCount))
+		eds, err := extendShares(shareV2)
+		require.NoError(t, err)
+		dahV2, err := NewDataAvailabilityHeader(eds)
+		require.NoError(t, err)
+		require.Equal(t, dahv4.hash, dahV2.hash)
+	}
 }
 
 func TestNewDataAvailabilityHeader(t *testing.T) {
@@ -56,13 +131,18 @@ func TestNewDataAvailabilityHeader(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			eds, err := ExtendShares(tt.shares)
-			require.NoError(t, err)
-			got, err := NewDataAvailabilityHeader(eds)
-			require.NoError(t, err)
-			require.Equal(t, tt.squareSize*2, uint64(len(got.ColumnRoots)), tt.name)
-			require.Equal(t, tt.squareSize*2, uint64(len(got.RowRoots)), tt.name)
-			require.Equal(t, tt.expectedHash, got.hash, tt.name)
+			for _, extendShares := range []extendFunc{
+				extendSharesWithPool,
+				ExtendShares,
+			} {
+				eds, err := extendShares(tt.shares)
+				require.NoError(t, err)
+				got, err := NewDataAvailabilityHeader(eds)
+				require.NoError(t, err)
+				require.Equal(t, tt.squareSize*2, uint64(len(got.ColumnRoots)))
+				require.Equal(t, tt.squareSize*2, uint64(len(got.RowRoots)))
+				require.Equal(t, tt.expectedHash, got.hash)
+			}
 		})
 	}
 }
@@ -88,23 +168,39 @@ func TestExtendShares(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		_, err := ExtendShares(tt.shares)
-		if tt.expectedErr {
-			require.NotNil(t, err)
-			continue
-		}
-		require.NoError(t, err)
+		t.Run(tt.name, func(t *testing.T) {
+			for _, extendShares := range []extendFunc{
+				extendSharesWithPool,
+				ExtendShares,
+			} {
+				_, err := extendShares(tt.shares)
+				if tt.expectedErr {
+					require.NotNil(t, err)
+				} else {
+					require.NoError(t, err)
+				}
+			}
+		})
 	}
 }
 
 func TestDataAvailabilityHeaderProtoConversion(t *testing.T) {
+	for _, extendShares := range []extendFunc{
+		extendSharesWithPool,
+		ExtendShares,
+	} {
+		testDataAvailabilityHeaderProtoConversion(t, extendShares)
+	}
+}
+
+func testDataAvailabilityHeaderProtoConversion(t *testing.T, extendShares func([][]byte) (*rsmt2d.ExtendedDataSquare, error)) {
 	type test struct {
 		name string
 		dah  DataAvailabilityHeader
 	}
 
 	shares := generateShares(appconsts.SquareSizeUpperBound * appconsts.SquareSizeUpperBound)
-	eds, err := ExtendShares(shares)
+	eds, err := extendShares(shares)
 	require.NoError(t, err)
 	bigdah, err := NewDataAvailabilityHeader(eds)
 	require.NoError(t, err)
@@ -131,6 +227,15 @@ func TestDataAvailabilityHeaderProtoConversion(t *testing.T) {
 }
 
 func Test_DAHValidateBasic(t *testing.T) {
+	for _, extendShares := range []extendFunc{
+		extendSharesWithPool,
+		ExtendShares,
+	} {
+		testDAHValidateBasic(t, extendShares)
+	}
+}
+
+func testDAHValidateBasic(t *testing.T, extendShares func([][]byte) (*rsmt2d.ExtendedDataSquare, error)) {
 	type test struct {
 		name      string
 		dah       DataAvailabilityHeader
@@ -141,7 +246,7 @@ func Test_DAHValidateBasic(t *testing.T) {
 	maxSize := appconsts.SquareSizeUpperBound * appconsts.SquareSizeUpperBound
 
 	shares := generateShares(maxSize)
-	eds, err := ExtendShares(shares)
+	eds, err := extendShares(shares)
 	require.NoError(t, err)
 	bigdah, err := NewDataAvailabilityHeader(eds)
 	require.NoError(t, err)
@@ -239,12 +344,88 @@ func TestSquareSize(t *testing.T) {
 	}
 }
 
+func TestConstructEDS_Versions(t *testing.T) {
+	minAppVersion := uint64(0)
+	maxAppVersion := appconsts.Version + 1 // even future versions won't error and assume compatibility with v4
+	for appVersion := minAppVersion; appVersion <= maxAppVersion; appVersion++ {
+		t.Run(fmt.Sprintf("app version %d", appVersion), func(t *testing.T) {
+			for _, constructEDS := range []constructFunc{
+				constructEDSWithPool,
+				ConstructEDS,
+			} {
+				shares := generateShares(4)
+				maxSquareSize := -1
+				eds, err := constructEDS(shares, appVersion, maxSquareSize)
+				if appVersion == 0 {
+					require.Error(t, err)
+					require.Nil(t, eds)
+				} else {
+					require.NoError(t, err)
+					require.NotNil(t, eds)
+				}
+			}
+		})
+	}
+}
+
+func TestConstructEDS_SquareSize(t *testing.T) {
+	type testCase struct {
+		name         string
+		appVersion   uint64
+		maxSquare    int
+		expectedSize int
+	}
+	testCases := []testCase{
+		{
+			name:         "v5 version with custom square size",
+			appVersion:   appconstsv5.Version,
+			maxSquare:    4,
+			expectedSize: 4,
+		},
+		{
+			name:         "v5 version with default square size",
+			appVersion:   appconstsv5.Version,
+			maxSquare:    -1,
+			expectedSize: appconstsv5.SquareSizeUpperBound,
+		},
+		{
+			name:         "latest version with custom square size",
+			appVersion:   appconsts.Version,
+			maxSquare:    8,
+			expectedSize: 8,
+		},
+		{
+			name:         "latest version with default square size",
+			appVersion:   appconsts.Version,
+			maxSquare:    -1,
+			expectedSize: appconsts.SquareSizeUpperBound,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, construct := range []constructFunc{
+				constructEDSWithPool,
+				ConstructEDS,
+			} {
+				txLength := sh.AvailableBytesFromCompactShares((tc.expectedSize * tc.expectedSize) - 1)
+				tx := bytes.Repeat([]byte{0x1}, txLength)
+				eds, err := construct([][]byte{tx}, tc.appVersion, tc.maxSquare)
+				require.NoError(t, err)
+				require.NotNil(t, eds)
+				// The EDS width should be 2*expectedSize
+				require.Equal(t, tc.expectedSize*2, int(eds.Width()))
+			}
+		})
+	}
+}
+
 // generateShares generates count number of shares with a constant namespace and
 // share contents.
 func generateShares(count int) (shares [][]byte) {
 	ns1 := sh.MustNewV0Namespace(bytes.Repeat([]byte{1}, sh.NamespaceVersionZeroIDSize))
 
-	for i := 0; i < count; i++ {
+	for range count {
 		share := generateShare(ns1.Bytes())
 		shares = append(shares, share)
 	}
@@ -265,12 +446,149 @@ func sortByteArrays(arr [][]byte) {
 	})
 }
 
-// maxDataAvailabilityHeader returns a DataAvailabilityHeader the maximum square
+// TestConstructEDS_RealBlocks verifies that ConstructEDS produces a data
+// availability header whose hash matches the on-chain data hash for real
+// blocks from Celestia mainnet and Mocha testnet. This ensures that the
+// go-square version used for each app version is correct and consensus-compatible.
+func TestConstructEDS_RealBlocks(t *testing.T) {
+	files := []string{
+		"testdata/mainnet_block_10126899.json", // app version 6, Celestia mainnet
+		"testdata/mocha_block_10383867.json",   // app version 7, Mocha testnet
+	}
+
+	for _, file := range files {
+		data, err := os.ReadFile(file)
+		require.NoError(t, err)
+
+		var block struct {
+			Height     int64    `json:"height"`
+			AppVersion uint64   `json:"app_version"`
+			DataHash   string   `json:"data_hash"`
+			SquareSize int      `json:"square_size"`
+			Txs        []string `json:"txs"`
+		}
+		require.NoError(t, json.Unmarshal(data, &block))
+
+		// Decode base64 txs.
+		txs := make([][]byte, len(block.Txs))
+		for i, b64 := range block.Txs {
+			txs[i], err = base64.StdEncoding.DecodeString(b64)
+			require.NoError(t, err)
+		}
+
+		// Decode expected data hash.
+		expectedHash, err := hex.DecodeString(block.DataHash)
+		require.NoError(t, err)
+
+		t.Run(fmt.Sprintf("height_%d_v%d", block.Height, block.AppVersion), func(t *testing.T) {
+			for _, construct := range []constructFunc{
+				constructEDSWithPool,
+				ConstructEDS,
+			} {
+				eds, err := construct(txs, block.AppVersion, block.SquareSize)
+				require.NoError(t, err)
+				require.NotNil(t, eds)
+
+				dah, err := NewDataAvailabilityHeader(eds)
+				require.NoError(t, err)
+				require.Equal(t, expectedHash, dah.Hash(),
+					"data hash mismatch for block %d (app version %d)", block.Height, block.AppVersion)
+			}
+		})
+	}
+}
+
+func TestConstructEDS_WithFibreTx(t *testing.T) {
+	fibreTx := buildMsgPayForFibreTxBytes(t)
+
+	type testCase struct {
+		name string
+		txs  [][]byte
+	}
+
+	testCases := []testCase{
+		{
+			name: "fibre tx only",
+			txs:  [][]byte{fibreTx},
+		},
+		{
+			name: "normal tx and fibre tx",
+			// squarev4.Construct requires ordering: normal txs, then blob txs, then fibre txs
+			txs: [][]byte{bytes.Repeat([]byte{0x01}, 200), fibreTx},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Verify that the data square contains PayForFibre namespace shares.
+			square, err := squarev4.Construct(tc.txs, appconsts.SquareSizeUpperBound, appconsts.SubtreeRootThreshold)
+			require.NoError(t, err)
+			pffRange := sh.GetShareRangeForNamespace(square, sh.PayForFibreNamespace)
+			require.False(t, pffRange.IsEmpty(), "expected PayForFibreNamespace shares in square")
+
+			t.Run("without pool", func(t *testing.T) {
+				eds, err := ConstructEDS(tc.txs, appconsts.Version, -1)
+				require.NoError(t, err)
+				require.NotNil(t, eds)
+			})
+
+			t.Run("with pool", func(t *testing.T) {
+				eds, err := constructEDSWithPool(tc.txs, appconsts.Version, -1)
+				require.NoError(t, err)
+				require.NotNil(t, eds)
+			})
+		})
+	}
+}
+
+// buildMsgPayForFibreTxBytes constructs Cosmos SDK Tx proto bytes containing a
+// single MsgPayForFibre message. This replicates the pattern from
+// go-square/v4/internal/test.BuildMsgPayForFibreTxBytes which is not importable.
+func buildMsgPayForFibreTxBytes(t *testing.T) []byte {
+	t.Helper()
+	ns := sh.MustNewV0Namespace(bytes.Repeat([]byte{1}, sh.NamespaceVersionZeroIDSize))
+	signerRaw := bytes.Repeat([]byte{0xAA}, sh.SignerSize)
+	signer, err := bech32.EncodeFromBase256("celestia", signerRaw)
+	require.NoError(t, err)
+	commitment := bytes.Repeat([]byte{0xFF}, sh.FibreCommitmentSize)
+
+	msg := &fibretypes.MsgPayForFibre{
+		Signer: signer,
+		PaymentPromise: fibretypes.PaymentPromise{
+			Namespace:   ns.Bytes(),
+			BlobVersion: fibretypes.BlobVersionZero,
+			Commitment:  commitment,
+		},
+	}
+
+	anyMsg, err := codectypes.NewAnyWithValue(msg)
+	require.NoError(t, err)
+	// Verify the cosmos-sdk derived TypeURL matches the constant that
+	// TryParseFibreTx checks when parsing fibre transactions.
+	require.Equal(t, gotx.MsgPayForFibreTypeURL, anyMsg.TypeUrl,
+		"cosmos-sdk TypeURL must match the constant that TryParseFibreTx checks")
+
+	body := &cosmostx.TxBody{
+		Messages: []*codectypes.Any{anyMsg},
+	}
+	tx := &cosmostx.Tx{Body: body}
+	txBytes, err := tx.Marshal()
+	require.NoError(t, err)
+	return txBytes
+}
+
+// maxDataAvailabilityHeader returns a DataAvailabilityHeader with the maximum square
 // size. This should only be used for testing.
 func maxDataAvailabilityHeader(t *testing.T) (dah DataAvailabilityHeader) {
+	return maxDataAvailabilityHeaderWithExtendShares(t, ExtendShares)
+}
+
+// maxDataAvailabilityHeaderWithExtendShares returns a DataAvailabilityHeader with the maximum square
+// size using the provided extendShares function. This should only be used for testing.
+func maxDataAvailabilityHeaderWithExtendShares(t *testing.T, extendShares func([][]byte) (*rsmt2d.ExtendedDataSquare, error)) (dah DataAvailabilityHeader) {
 	shares := generateShares(appconsts.SquareSizeUpperBound * appconsts.SquareSizeUpperBound)
 
-	eds, err := ExtendShares(shares)
+	eds, err := extendShares(shares)
 	require.NoError(t, err)
 
 	dah, err = NewDataAvailabilityHeader(eds)

@@ -11,17 +11,21 @@ import (
 	"time"
 
 	"cosmossdk.io/x/feegrant"
-	"github.com/celestiaorg/celestia-app/v6/app/encoding"
-	"github.com/celestiaorg/celestia-app/v6/pkg/appconsts"
-	"github.com/celestiaorg/celestia-app/v6/pkg/user"
-	"github.com/celestiaorg/go-square/v2/share"
+	"github.com/celestiaorg/celestia-app/v8/app/encoding"
+	"github.com/celestiaorg/celestia-app/v8/pkg/appconsts"
+	"github.com/celestiaorg/celestia-app/v8/pkg/user"
+	txclientv2 "github.com/celestiaorg/celestia-app/v8/pkg/user/v2"
+	"github.com/celestiaorg/go-square/v4/share"
 	tmservice "github.com/cosmos/cosmos-sdk/client/grpc/cmtservice"
 	"github.com/cosmos/cosmos-sdk/crypto/hd"
 	"github.com/cosmos/cosmos-sdk/crypto/keyring"
 	"github.com/cosmos/cosmos-sdk/types"
+	authtypes "github.com/cosmos/cosmos-sdk/x/auth/types"
 	bank "github.com/cosmos/cosmos-sdk/x/bank/types"
 	"github.com/rs/zerolog/log"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 type AccountManager struct {
@@ -36,7 +40,7 @@ type AccountManager struct {
 
 	// to protect from concurrent writes to the map
 	mtx          sync.Mutex
-	txClient     *user.TxClient
+	txClient     *txclientv2.TxClient
 	balance      uint64
 	latestHeight uint64
 	lastUpdated  time.Time
@@ -147,7 +151,7 @@ func (am *AccountManager) setupMasterAccount(ctx context.Context, masterAccName 
 		return fmt.Errorf("error getting master account %s balance: %w", masterAccName, err)
 	}
 
-	am.txClient, err = user.SetupTxClient(ctx, am.keys, am.conn, am.encCfg, user.WithDefaultAccount(masterAccName), user.WithPollTime(am.pollTime))
+	am.txClient, err = txclientv2.SetupTxClient(ctx, am.keys, am.conn, am.encCfg, user.WithDefaultAccount(masterAccName), user.WithPollTime(am.pollTime))
 	if err != nil {
 		return err
 	}
@@ -172,7 +176,7 @@ func (am *AccountManager) AllocateAccounts(n, balance int) []types.AccAddress {
 
 	path := hd.CreateHDPath(types.CoinType, 0, 0).String()
 	addresses := make([]types.AccAddress, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		name := am.nextAccountName()
 		record, _, err := am.keys.NewMnemonic(name, keyring.English, path, keyring.DefaultBIP39Passphrase, hd.Secp256k1)
 		if err != nil {
@@ -275,7 +279,7 @@ func (am *AccountManager) Submit(ctx context.Context, op Operation) error {
 	}
 
 	var (
-		res *user.TxResponse
+		res *types.TxResponse
 		err error
 	)
 	if len(op.Blobs) > 0 {
@@ -370,6 +374,12 @@ func (am *AccountManager) GenerateAccounts(ctx context.Context) error {
 		return fmt.Errorf("error funding accounts: %w", err)
 	}
 
+	// Wait until all funded accounts are queryable via the auth gRPC endpoint
+	// to avoid a race between tx confirmation and account state availability.
+	if err := am.waitForAccounts(ctx); err != nil {
+		return fmt.Errorf("error waiting for accounts to be queryable: %w", err)
+	}
+
 	// print the new accounts
 	for _, acc := range am.pending {
 		am.accountIndex++
@@ -382,6 +392,37 @@ func (am *AccountManager) GenerateAccounts(ctx context.Context) error {
 
 	// clear the pending accounts
 	am.pending = nil
+	return nil
+}
+
+// waitForAccounts polls the auth gRPC endpoint until each pending account is
+// queryable. This avoids a race where ConfirmTx reports the funding tx as
+// committed but the ABCI Query endpoint hasn't yet indexed the new account.
+func (am *AccountManager) waitForAccounts(ctx context.Context) error {
+	authClient := authtypes.NewQueryClient(am.conn)
+	for _, acc := range am.pending {
+		addr := acc.address.String()
+		ticker := time.NewTicker(am.pollTime)
+		for {
+			select {
+			case <-ctx.Done():
+				ticker.Stop()
+				return ctx.Err()
+			case <-ticker.C:
+				_, err := authClient.Account(ctx, &authtypes.QueryAccountRequest{Address: addr})
+				if err == nil {
+					ticker.Stop()
+					goto next
+				}
+				if s, ok := status.FromError(err); ok && s.Code() == codes.NotFound {
+					continue
+				}
+				ticker.Stop()
+				return fmt.Errorf("error querying account %s: %w", addr, err)
+			}
+		}
+	next:
+	}
 	return nil
 }
 

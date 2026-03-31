@@ -1,24 +1,23 @@
 package app_test
 
 import (
-	"encoding/hex"
 	"math/rand"
 	"sort"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/celestiaorg/celestia-app/v6/app"
-	"github.com/celestiaorg/celestia-app/v6/app/encoding"
-	"github.com/celestiaorg/celestia-app/v6/app/params"
-	"github.com/celestiaorg/celestia-app/v6/pkg/appconsts"
-	"github.com/celestiaorg/celestia-app/v6/pkg/user"
-	"github.com/celestiaorg/celestia-app/v6/test/util/blobfactory"
-	"github.com/celestiaorg/celestia-app/v6/test/util/random"
-	"github.com/celestiaorg/celestia-app/v6/test/util/testfactory"
-	"github.com/celestiaorg/celestia-app/v6/test/util/testnode"
-	blobtypes "github.com/celestiaorg/celestia-app/v6/x/blob/types"
-	"github.com/celestiaorg/go-square/v2/share"
+	"github.com/celestiaorg/celestia-app/v8/app"
+	"github.com/celestiaorg/celestia-app/v8/app/encoding"
+	"github.com/celestiaorg/celestia-app/v8/app/params"
+	"github.com/celestiaorg/celestia-app/v8/pkg/appconsts"
+	"github.com/celestiaorg/celestia-app/v8/pkg/user"
+	"github.com/celestiaorg/celestia-app/v8/test/util/blobfactory"
+	"github.com/celestiaorg/celestia-app/v8/test/util/random"
+	"github.com/celestiaorg/celestia-app/v8/test/util/testfactory"
+	"github.com/celestiaorg/celestia-app/v8/test/util/testnode"
+	blobtypes "github.com/celestiaorg/celestia-app/v8/x/blob/types"
+	"github.com/celestiaorg/go-square/v4/share"
 	abci "github.com/cometbft/cometbft/abci/types"
 	rpctypes "github.com/cometbft/cometbft/rpc/core/types"
 	sdk "github.com/cosmos/cosmos-sdk/types"
@@ -27,8 +26,6 @@ import (
 )
 
 func TestPriorityTestSuite(t *testing.T) {
-	t.Skip("TODO: skipping test until prioritisation available in core")
-
 	if testing.Short() {
 		t.Skip("skipping app/test/priority_test in short mode.")
 	}
@@ -51,7 +48,7 @@ func (s *PriorityTestSuite) SetupSuite() {
 	cfg := testnode.DefaultConfig().
 		WithFundedAccounts(s.accountNames...).
 		// use a long block time to guarantee that some transactions are included in the same block
-		WithTimeoutCommit(time.Second)
+		WithDelayedPrecommitTimeout(time.Second)
 
 	cctx, _, _ := testnode.NewNetwork(t, cfg)
 	s.cctx = cctx
@@ -73,16 +70,16 @@ func (s *PriorityTestSuite) TestPriorityByGasPrice() {
 
 	// quickly submit blobs with a random fee
 	hashes := make(chan string, len(s.accountNames))
-	blobSize := uint32(100)
-	gasLimit := blobtypes.DefaultEstimateGas([]uint32{blobSize})
+	blobSize := 100
+	msg, err := blobtypes.NewMsgPayForBlobs(s.accountNames[0], 0, blobfactory.ManyBlobs(random.New(), []share.Namespace{share.RandomBlobNamespace()}, []int{blobSize})...)
+	require.NoError(t, err)
+	gasLimit := blobtypes.DefaultEstimateGas(msg)
 	wg := &sync.WaitGroup{}
-	r := random.New()
 	for _, accName := range s.accountNames {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			// ensure that it is greater than the min gas price
 			gasPrice := float64(rand.Intn(1000)+1) * appconsts.DefaultMinGasPrice
+			r := random.New()
 			blobs := blobfactory.ManyBlobs(r, []share.Namespace{share.RandomBlobNamespace()}, []int{100})
 			resp, err := s.txClient.BroadcastPayForBlobWithAccount(
 				s.cctx.GoContext(),
@@ -93,23 +90,21 @@ func (s *PriorityTestSuite) TestPriorityByGasPrice() {
 			require.NoError(t, err)
 			require.Equal(t, abci.CodeTypeOK, resp.Code, resp.RawLog)
 			hashes <- resp.TxHash
-		}()
+		})
 	}
 
 	wg.Wait()
 	close(hashes)
 
-	err := s.cctx.WaitForNextBlock()
+	err = s.cctx.WaitForNextBlock()
 	require.NoError(t, err)
 
 	// get the responses for each tx for analysis and sort by height
 	// note: use rpc types because they contain the tx index
 	heightMap := make(map[int64][]*rpctypes.ResultTx)
 	for hash := range hashes {
-		// use the core rpc type because it contains the tx index
-		hash, err := hex.DecodeString(hash)
-		require.NoError(t, err)
-		coreRes, err := s.cctx.Client.Tx(s.cctx.GoContext(), hash, false)
+		// use WaitForTx to poll until the tx is indexed
+		coreRes, err := s.cctx.WaitForTx(hash, 10)
 		require.NoError(t, err)
 		heightMap[coreRes.Height] = append(heightMap[coreRes.Height], coreRes)
 	}
@@ -140,7 +135,7 @@ func sortByIndex(txs []*rpctypes.ResultTx) []*rpctypes.ResultTx {
 
 func isSortedByFee(t *testing.T, ecfg encoding.Config, responses []*rpctypes.ResultTx) bool {
 	for i := 0; i < len(responses)-1; i++ {
-		if getGasPrice(t, ecfg, responses[i]) <= getGasPrice(t, ecfg, responses[i+1]) {
+		if getGasPrice(t, ecfg, responses[i]) < getGasPrice(t, ecfg, responses[i+1]) {
 			return false
 		}
 	}

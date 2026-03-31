@@ -5,13 +5,14 @@ import (
 	"time"
 
 	"cosmossdk.io/math"
-	"github.com/celestiaorg/celestia-app/v6/app/encoding"
-	"github.com/celestiaorg/celestia-app/v6/app/params"
-	"github.com/celestiaorg/celestia-app/v6/pkg/appconsts"
+	"github.com/celestiaorg/celestia-app/v8/app/encoding"
+	"github.com/celestiaorg/celestia-app/v8/app/params"
+	"github.com/celestiaorg/celestia-app/v8/pkg/appconsts"
 	tmcfg "github.com/cometbft/cometbft/config"
 	"github.com/cosmos/cosmos-sdk/types"
 	govtypes "github.com/cosmos/cosmos-sdk/x/gov/types/v1"
 	icagenesistypes "github.com/cosmos/ibc-go/v8/modules/apps/27-interchain-accounts/genesis/types"
+	ibctypes "github.com/cosmos/ibc-go/v8/modules/core/types"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -52,9 +53,10 @@ func TestDefaultAppConfig(t *testing.T) {
 
 	assert.Equal(t, uint64(1500), cfg.StateSync.SnapshotInterval)
 	assert.Equal(t, uint32(2), cfg.StateSync.SnapshotKeepRecent)
-	assert.Equal(t, "0.004utia", cfg.MinGasPrices)
+	assert.Equal(t, "", cfg.MinGasPrices)
 
 	assert.Equal(t, appconsts.DefaultUpperBoundMaxBytes*2, cfg.GRPC.MaxRecvMsgSize)
+	assert.Equal(t, uint64(0), cfg.MinRetainBlocks)
 }
 
 func TestDefaultConsensusConfig(t *testing.T) {
@@ -63,7 +65,7 @@ func TestDefaultConsensusConfig(t *testing.T) {
 	t.Run("RPC overrides", func(t *testing.T) {
 		want := tmcfg.DefaultRPCConfig()
 		want.TimeoutBroadcastTxCommit = 50 * time.Second
-		want.MaxBodyBytes = int64(appconsts.DefaultUpperBoundMaxBytes) * 3
+		want.MaxBodyBytes = appconsts.MempoolSize + (32 * mebibyte)
 		want.GRPCListenAddress = "tcp://127.0.0.1:9098"
 
 		assert.Equal(t, want, got.RPC)
@@ -82,19 +84,24 @@ func TestDefaultConsensusConfig(t *testing.T) {
 			RecheckTimeout:        1_000_000_000,
 
 			// Overrides
-			MaxTxBytes:   appconsts.MaxTxSize,
-			MaxTxsBytes:  int64(appconsts.DefaultUpperBoundMaxBytes) * 3,
-			TTLDuration:  75 * time.Second,
-			TTLNumBlocks: 12,
-			Type:         tmcfg.MempoolTypePriority,
+			MaxTxBytes:     appconsts.MaxTxSize,
+			MaxTxsBytes:    appconsts.MempoolSize,
+			TTLDuration:    0 * time.Second,
+			TTLNumBlocks:   36,
+			Type:           tmcfg.MempoolTypeCAT,
+			MaxGossipDelay: time.Second * 20,
 		}
 		assert.Equal(t, want, *got.Mempool)
 	})
 
+	t.Run("db backend override", func(t *testing.T) {
+		assert.Equal(t, "pebbledb", got.DBBackend)
+	})
+
 	t.Run("p2p overrides", func(t *testing.T) {
 		const mebibyte = 1048576
-		assert.Equal(t, int64(10*mebibyte), got.P2P.SendRate)
-		assert.Equal(t, int64(10*mebibyte), got.P2P.RecvRate)
+		assert.Equal(t, int64(100*mebibyte), got.P2P.SendRate)
+		assert.Equal(t, int64(100*mebibyte), got.P2P.RecvRate)
 	})
 }
 
@@ -108,4 +115,24 @@ func Test_icaDefaultGenesis(t *testing.T) {
 	assert.Equal(t, got.HostGenesisState.Params.AllowMessages, IcaAllowMessages())
 	assert.True(t, got.HostGenesisState.Params.HostEnabled)
 	assert.False(t, got.ControllerGenesisState.Params.ControllerEnabled)
+}
+
+func Test_ibcDefaultGenesis(t *testing.T) {
+	enc := encoding.MakeConfig(ModuleEncodingRegisters...)
+	im := ibcModule{}
+	raw := im.DefaultGenesis(enc.Codec)
+	got := ibctypes.GenesisState{}
+	enc.Codec.MustUnmarshalJSON(raw, &got)
+
+	assert.Equal(t, []string{"06-solomachine", "07-tendermint"}, got.ClientGenesis.Params.AllowedClients)
+	assert.Equal(t, uint64((15 * time.Second).Nanoseconds()), got.ConnectionGenesis.Params.MaxExpectedTimePerBlock)
+}
+
+func TestEvidenceParams(t *testing.T) {
+	got := EvidenceParams()
+	mebibyte := int64(1048576)
+
+	assert.Equal(t, appconsts.MaxAgeDuration, got.MaxAgeDuration)
+	assert.Equal(t, int64(appconsts.MaxAgeNumBlocks), got.MaxAgeNumBlocks)
+	assert.Equal(t, mebibyte, got.MaxBytes)
 }

@@ -5,27 +5,55 @@ on:
   pull_request:
     paths:
       - "proto/**"
+  merge_group:
 
 permissions:
   contents: read
 
 jobs:
+  # GitHub does not support native path filters on merge_group, so use
+  # dorny/paths-filter to detect proto changes and gate the lint/break-check
+  # jobs. On pull_request the native path filter already handles this, but
+  # the changes job is harmless and keeps the logic consistent.
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      proto: ${{ steps.filter.outputs.proto }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d #v4.0.1
+        id: filter
+        with:
+          filters: |
+            proto:
+              - 'proto/**'
+
   lint:
+    needs: changes
+    if: needs.changes.outputs.proto == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: bufbuild/buf-setup-action@v1.50.0
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
       - uses: bufbuild/buf-lint-action@v1
         with:
           input: "proto"
 
   break-check:
+    needs: changes
+    if: needs.changes.outputs.proto == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: bufbuild/buf-setup-action@v1.50.0
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
       - uses: bufbuild/buf-breaking-action@v1
         with:
           input: "proto"
-          against: "https://github.com/${{ github.repository }}.git#branch=${{ github.event.pull_request.base.ref }},ref=HEAD~1,subdir=proto"
+          against: >-
+            https://github.com/${{ github.repository }}.git#branch=${{
+            github.event.pull_request.base.ref || 'main' }},subdir=proto

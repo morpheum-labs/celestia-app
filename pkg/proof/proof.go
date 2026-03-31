@@ -6,12 +6,12 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/celestiaorg/celestia-app/v6/pkg/appconsts"
-	"github.com/celestiaorg/celestia-app/v6/pkg/da"
-	"github.com/celestiaorg/celestia-app/v6/pkg/wrapper"
-	"github.com/celestiaorg/go-square/v2"
-	"github.com/celestiaorg/go-square/v2/share"
-	blobtx "github.com/celestiaorg/go-square/v2/tx"
+	"github.com/celestiaorg/celestia-app/v8/pkg/appconsts"
+	"github.com/celestiaorg/celestia-app/v8/pkg/da"
+	"github.com/celestiaorg/celestia-app/v8/pkg/wrapper"
+	"github.com/celestiaorg/go-square/v4"
+	"github.com/celestiaorg/go-square/v4/share"
+	blobtx "github.com/celestiaorg/go-square/v4/tx"
 	"github.com/celestiaorg/rsmt2d"
 	"github.com/cometbft/cometbft/crypto/merkle"
 )
@@ -79,7 +79,10 @@ func NewShareInclusionProofFromEDS(
 	namespace share.Namespace,
 	shareRange share.Range,
 ) (ShareProof, error) {
-	squareSize := square.Size(len(eds.FlattenedODS()))
+	squareSize, err := square.Size(len(eds.FlattenedODS()))
+	if err != nil {
+		return ShareProof{}, err
+	}
 	startRow := shareRange.Start / squareSize
 	endRow := (shareRange.End - 1) / squareSize
 	startLeaf := shareRange.Start % squareSize

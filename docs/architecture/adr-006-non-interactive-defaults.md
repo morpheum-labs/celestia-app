@@ -86,7 +86,7 @@ To meet the above constraints, there are multiple refactors required.
 - Add metadata to wrapped transactions, connecting that transaction with a message that it pays for.
 - Refactor share splitting and merging to use the above metadata when decoding and encoding the square. [#462](https://github.com/celestiaorg/celestia-core/issues/462) [#819](https://github.com/celestiaorg/celestia-core/pull/819) [#637](https://github.com/celestiaorg/celestia-app/pull/637)
 - Implement the non-interactive default logic. [#680](https://github.com/celestiaorg/celestia-app/pull/680)
-- Implement the ability to traverse nmt tree to find subtree roots. [#621](https://github.com/celestiaorg/celestia-app/pull/621) [#545](https://github.com/celestiaorg/celestia-app/pull/549) [#681](https://github.com/celestiaorg/celestia-app/pull/681)
+- Implement the ability to traverse nmt tree to find subtree roots. [#621](https://github.com/celestiaorg/celestia-app/pull/621) [#549](https://github.com/celestiaorg/celestia-app/pull/549) [#681](https://github.com/celestiaorg/celestia-app/pull/681)
 - Refactor `PrepareProposal` to arrange the shares such that each message has the appropriate subtree roots, and so that the metadata connection between transactions and messages is correct. [#692](https://github.com/celestiaorg/celestia-app/pull/692)
 - Refactor `ProcessProposal` to check for message inclusion using only subtree roots to row roots. [#747](https://github.com/celestiaorg/celestia-app/pull/747)
 
@@ -380,7 +380,7 @@ The simplest approach, and the one taken in the initial implementation, works by
 ```go
 func (app *App) PrepareProposal(req abci.RequestPrepareProposal) abci.ResponsePrepareProposal {
    ...
-   // the totalSharesUsed can be larger that the max number of shares if we
+   // the totalSharesUsed can be larger than the max number of shares if we
    // reach the max square size. In this case, we must prune the deprioritized
    // txs (and their messages if they're pfb txs).
    if totalSharesUsed > int(squareSize*squareSize) {

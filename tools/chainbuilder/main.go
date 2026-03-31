@@ -8,18 +8,18 @@ import (
 	"time"
 
 	"cosmossdk.io/log"
-	"github.com/celestiaorg/celestia-app/v6/app"
-	"github.com/celestiaorg/celestia-app/v6/app/encoding"
-	"github.com/celestiaorg/celestia-app/v6/pkg/appconsts"
-	"github.com/celestiaorg/celestia-app/v6/pkg/da"
-	"github.com/celestiaorg/celestia-app/v6/pkg/user"
-	"github.com/celestiaorg/celestia-app/v6/test/util"
-	"github.com/celestiaorg/celestia-app/v6/test/util/genesis"
-	"github.com/celestiaorg/celestia-app/v6/test/util/random"
-	"github.com/celestiaorg/celestia-app/v6/test/util/testnode"
-	blobtypes "github.com/celestiaorg/celestia-app/v6/x/blob/types"
-	"github.com/celestiaorg/go-square/v2"
-	"github.com/celestiaorg/go-square/v2/share"
+	"github.com/celestiaorg/celestia-app/v8/app"
+	"github.com/celestiaorg/celestia-app/v8/app/encoding"
+	"github.com/celestiaorg/celestia-app/v8/pkg/appconsts"
+	"github.com/celestiaorg/celestia-app/v8/pkg/da"
+	"github.com/celestiaorg/celestia-app/v8/pkg/user"
+	"github.com/celestiaorg/celestia-app/v8/test/util"
+	"github.com/celestiaorg/celestia-app/v8/test/util/genesis"
+	"github.com/celestiaorg/celestia-app/v8/test/util/random"
+	"github.com/celestiaorg/celestia-app/v8/test/util/testnode"
+	blobtypes "github.com/celestiaorg/celestia-app/v8/x/blob/types"
+	"github.com/celestiaorg/go-square/v4"
+	"github.com/celestiaorg/go-square/v4/share"
 	dbm "github.com/cometbft/cometbft-db"
 	abci "github.com/cometbft/cometbft/abci/types"
 	"github.com/cometbft/cometbft/crypto"
@@ -144,7 +144,6 @@ func Run(ctx context.Context, cfg BuilderConfig, dir string) error {
 		appCfg.Pruning = "everything" // we just want the last two states
 		appCfg.StateSync.SnapshotInterval = 0
 		cp := app.DefaultConsensusParams()
-
 		cp.Version.App = cfg.AppVersion // set the app version
 		gen = genesis.NewDefaultGenesis().
 			WithConsensusParams(cp).
@@ -173,14 +172,14 @@ func Run(ctx context.Context, cfg BuilderConfig, dir string) error {
 	validatorKey := privval.LoadFilePV(tmCfg.PrivValidatorKeyFile(), tmCfg.PrivValidatorStateFile())
 	validatorAddr := validatorKey.Key.Address
 
-	blockDB, err := dbm.NewDB("blockstore", dbm.GoLevelDBBackend, tmCfg.DBDir())
+	blockDB, err := dbm.NewDB("blockstore", dbm.BackendType(tmCfg.DBBackend), tmCfg.DBDir())
 	if err != nil {
 		return fmt.Errorf("failed to create block database: %w", err)
 	}
 
 	blockStore := store.NewBlockStore(blockDB)
 
-	stateDB, err := dbm.NewDB("state", dbm.GoLevelDBBackend, tmCfg.DBDir())
+	stateDB, err := dbm.NewDB("state", dbm.BackendType(tmCfg.DBBackend), tmCfg.DBDir())
 	if err != nil {
 		return fmt.Errorf("failed to create state database: %w", err)
 	}
@@ -189,7 +188,7 @@ func Run(ctx context.Context, cfg BuilderConfig, dir string) error {
 		DiscardABCIResponses: true,
 	})
 
-	appDB, err := tmdbm.NewDB("application", tmdbm.GoLevelDBBackend, tmCfg.DBDir())
+	appDB, err := tmdbm.NewDB("application", tmdbm.BackendType(tmCfg.DBBackend), tmCfg.DBDir())
 	if err != nil {
 		return fmt.Errorf("failed to create application database: %w", err)
 	}
@@ -326,10 +325,9 @@ func Run(ctx context.Context, cfg BuilderConfig, dir string) error {
 				return fmt.Errorf("failed to convert data from protobuf: %w", err)
 			}
 
-			block := state.MakeBlock(height, data, commit, nil, validatorAddr)
-			blockParts, err := block.MakePartSet(types.BlockPartSizeBytes)
+			block, blockParts, err := state.MakeBlock(height, data, commit, nil, validatorAddr)
 			if err != nil {
-				return fmt.Errorf("failed to make block part set: %w", err)
+				return fmt.Errorf("failed to make block: %w", err)
 			}
 			blockID := types.BlockID{
 				Hash:          block.Hash(),
@@ -471,8 +469,12 @@ func generateSquareRoutine(
 		if err != nil {
 			return err
 		}
+		msg, err := blobtypes.NewMsgPayForBlobs(account.Address().String(), 0, blob)
+		if err != nil {
+			return err
+		}
 
-		blobGas := blobtypes.DefaultEstimateGas([]uint32{uint32(cfg.BlockSize)})
+		blobGas := blobtypes.DefaultEstimateGas(msg)
 		fee := float64(blobGas) * appconsts.DefaultMinGasPrice * 2
 		tx, _, err := signer.CreatePayForBlobs(account.Name(), []*share.Blob{blob}, user.SetGasLimit(blobGas), user.SetFee(uint64(fee)))
 		if err != nil {
@@ -482,11 +484,11 @@ func generateSquareRoutine(
 			return err
 		}
 
-		dataSquare, txs, err := square.Build(
-			[][]byte{tx},
-			maxSquareSize,
-			appconsts.SubtreeRootThreshold,
-		)
+		builder, err := square.NewBuilder(maxSquareSize, appconsts.SubtreeRootThreshold, tx)
+		if err != nil {
+			return err
+		}
+		dataSquare, err := builder.Export()
 		if err != nil {
 			return err
 		}
@@ -501,11 +503,16 @@ func generateSquareRoutine(
 			return err
 		}
 
+		ss, err := dataSquare.Size()
+		if err != nil {
+			return err
+		}
+
 		select {
 		case dataCh <- &tmproto.Data{
-			Txs:        txs,
+			Txs:        [][]byte{tx},
 			Hash:       dah.Hash(),
-			SquareSize: uint64(dataSquare.Size()),
+			SquareSize: uint64(ss),
 		}:
 		case <-ctx.Done():
 			return ctx.Err()

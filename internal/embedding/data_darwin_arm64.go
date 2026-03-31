@@ -13,4 +13,10 @@ var (
 
 	//go:embed celestia-app_darwin_v5_arm64.tar.gz
 	v5binaryCompressed []byte
+
+	//go:embed celestia-app_darwin_v6_arm64.tar.gz
+	v6binaryCompressed []byte
+
+	//go:embed celestia-app_darwin_v7_arm64.tar.gz
+	v7binaryCompressed []byte
 )

@@ -5,18 +5,21 @@ import (
 	"time"
 
 	"cosmossdk.io/log"
-	upgradetypes "cosmossdk.io/x/upgrade/types"
-	"github.com/celestiaorg/celestia-app/v6/app"
-	"github.com/celestiaorg/celestia-app/v6/test/util"
-	"github.com/celestiaorg/celestia-app/v6/test/util/testfactory"
+	"cosmossdk.io/math"
+	"github.com/celestiaorg/celestia-app/v8/app"
+	"github.com/celestiaorg/celestia-app/v8/test/util"
+	"github.com/celestiaorg/celestia-app/v8/test/util/testfactory"
 	tmdb "github.com/cosmos/cosmos-db"
 	"github.com/cosmos/cosmos-sdk/baseapp"
-	icahosttypes "github.com/cosmos/ibc-go/v8/modules/apps/27-interchain-accounts/host/types"
+	sdk "github.com/cosmos/cosmos-sdk/types"
+	stakingkeeper "github.com/cosmos/cosmos-sdk/x/staking/keeper"
+	stakingtypes "github.com/cosmos/cosmos-sdk/x/staking/types"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func TestUpgrades(t *testing.T) {
-	t.Run("app.New() should register a v6 upgrade handler", func(t *testing.T) {
+	t.Run("app.New() should register a v8 upgrade handler", func(t *testing.T) {
 		logger := log.NewNopLogger()
 		db := tmdb.NewMemDB()
 		traceStore := &NoopWriter{}
@@ -25,43 +28,106 @@ func TestUpgrades(t *testing.T) {
 
 		testApp := app.New(logger, db, traceStore, timeoutCommit, appOptions, baseapp.SetChainID(testfactory.ChainID))
 
-		require.False(t, testApp.UpgradeKeeper.HasHandler("v5"))
-		require.True(t, testApp.UpgradeKeeper.HasHandler("v6"))
+		require.False(t, testApp.UpgradeKeeper.HasHandler("v7"))
+		require.True(t, testApp.UpgradeKeeper.HasHandler("v8"))
 	})
 }
 
-func TestApplyUpgrade(t *testing.T) {
-	t.Run("apply upgrade should set ICA host params to an explicit allowlist of messages", func(t *testing.T) {
+func TestSetMaxExpectedTimePerBlock(t *testing.T) {
+	consensusParams := app.DefaultConsensusParams()
+	testApp, _, _ := util.NewTestAppWithGenesisSet(consensusParams)
+	ctx := testApp.NewContext(false)
+
+	err := testApp.SetMaxExpectedTimePerBlock(ctx)
+	require.NoError(t, err)
+
+	got := testApp.IBCKeeper.ConnectionKeeper.GetParams(ctx)
+	want := uint64((15 * time.Second).Nanoseconds())
+	assert.Equal(t, want, got.MaxExpectedTimePerBlock)
+}
+
+// createValidatorWithCommission creates a validator with specific commission
+// rates for testing
+func createValidatorWithCommission(t *testing.T, testApp *app.App, ctx sdk.Context, rate string, maxRate string) stakingtypes.Validator {
+	rateDec, err := math.LegacyNewDecFromStr(rate)
+	require.NoError(t, err)
+
+	maxRateDec, err := math.LegacyNewDecFromStr(maxRate)
+	require.NoError(t, err)
+
+	maxChangeRateDec := math.LegacyOneDec()
+	require.NoError(t, err)
+
+	validators, err := testApp.StakingKeeper.GetAllValidators(ctx)
+	require.NoError(t, err)
+	require.Greater(t, len(validators), 0, "Should have at least one validator")
+
+	validator := validators[0]
+	validator.Commission = stakingtypes.NewCommission(rateDec, maxRateDec, maxChangeRateDec)
+
+	err = testApp.StakingKeeper.SetValidator(ctx, validator)
+	require.NoError(t, err)
+
+	return validator
+}
+
+func TestMaxCommissionRate(t *testing.T) {
+	t.Run("editing validator commission to 55% should succeed", func(t *testing.T) {
 		consensusParams := app.DefaultConsensusParams()
-		consensusParams.Version.App = 5
 		testApp, _, _ := util.NewTestAppWithGenesisSet(consensusParams)
-		require.True(t, testApp.UpgradeKeeper.HasHandler("v6"))
-		plan := upgradetypes.Plan{
-			Name:   "v6",
-			Time:   time.Now(),
-			Height: 1,
-			Info:   "info",
-		}
 
-		// Note: v5 didn't have the ICA module registered so no params were set
-		// but this test explicitly sets the params to values to verify they get
-		// overridden during ApplyUpgrade.
-		allMessages := []string{"*"}
-		ctx := testApp.NewContext(false)
-		testApp.ICAHostKeeper.SetParams(ctx, icahosttypes.Params{
-			HostEnabled:   false,
-			AllowMessages: allMessages,
-		})
-		got := testApp.ICAHostKeeper.GetParams(ctx)
-		require.False(t, got.HostEnabled)
-		require.Equal(t, allMessages, got.AllowMessages)
+		// Set the block time to 25 hours ahead of the genesis block to ensure
+		// the commission rate can be updated.
+		ctx := testApp.NewContext(false).WithBlockTime(util.GenesisTime.Add(time.Hour * 25))
 
-		err := testApp.UpgradeKeeper.ApplyUpgrade(ctx, plan)
+		validator := createValidatorWithCommission(t, testApp, ctx, "0.20", "1.00")
+		valAddr, err := sdk.ValAddressFromBech32(validator.GetOperator())
 		require.NoError(t, err)
 
-		ctx = testApp.NewContext(false)
-		got = testApp.ICAHostKeeper.GetParams(ctx)
-		require.True(t, got.HostEnabled)
-		require.Equal(t, got.AllowMessages, app.IcaAllowMessages())
+		msgServer := stakingkeeper.NewMsgServerImpl(testApp.StakingKeeper)
+		newRate := math.LegacyNewDecWithPrec(55, 2) // 55%
+		description := stakingtypes.NewDescription("moniker", "identity", "website", "securityContact", "details")
+		msg := stakingtypes.NewMsgEditValidator(
+			valAddr.String(),
+			description,
+			&newRate,
+			nil,
+		)
+
+		_, err = msgServer.EditValidator(ctx, msg)
+		require.NoError(t, err)
+
+		// Verify the commission rate was updated
+		updatedValidator, err := testApp.StakingKeeper.GetValidator(ctx, valAddr)
+		require.NoError(t, err)
+		require.Equal(t, newRate, updatedValidator.Commission.Rate)
+	})
+
+	t.Run("editing validator commission to 65% should fail", func(t *testing.T) {
+		consensusParams := app.DefaultConsensusParams()
+		testApp, _, _ := util.NewTestAppWithGenesisSet(consensusParams)
+
+		// Set the block time to 25 hours ahead of the genesis block to ensure
+		// the commission rate can be updated.
+		ctx := testApp.NewContext(false).WithBlockTime(util.GenesisTime.Add(time.Hour * 25))
+
+		// Set up validator with a high max change rate to allow commission changes
+		validator := createValidatorWithCommission(t, testApp, ctx, "0.20", "1.00")
+		valAddr, err := sdk.ValAddressFromBech32(validator.GetOperator())
+		require.NoError(t, err)
+
+		msgServer := stakingkeeper.NewMsgServerImpl(testApp.StakingKeeper)
+		newRate := math.LegacyNewDecWithPrec(65, 2) // 65%
+		description := stakingtypes.NewDescription("moniker", "identity", "website", "securityContact", "details")
+		msg := stakingtypes.NewMsgEditValidator(
+			valAddr.String(),
+			description,
+			&newRate,
+			nil,
+		)
+
+		_, err = msgServer.EditValidator(ctx, msg)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "commission rate cannot be greater than the max commission rate")
 	})
 }

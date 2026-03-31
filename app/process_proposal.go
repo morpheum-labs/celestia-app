@@ -7,14 +7,14 @@ import (
 
 	"cosmossdk.io/errors"
 	"cosmossdk.io/log"
-	"github.com/celestiaorg/celestia-app/v6/app/ante"
-	apperr "github.com/celestiaorg/celestia-app/v6/app/errors"
-	"github.com/celestiaorg/celestia-app/v6/pkg/appconsts"
-	"github.com/celestiaorg/celestia-app/v6/pkg/da"
-	blobtypes "github.com/celestiaorg/celestia-app/v6/x/blob/types"
-	"github.com/celestiaorg/go-square/v2"
-	"github.com/celestiaorg/go-square/v2/share"
-	blobtx "github.com/celestiaorg/go-square/v2/tx"
+	"github.com/celestiaorg/celestia-app/v8/app/ante"
+	apperr "github.com/celestiaorg/celestia-app/v8/app/errors"
+	"github.com/celestiaorg/celestia-app/v8/pkg/appconsts"
+	"github.com/celestiaorg/celestia-app/v8/pkg/da"
+	blobtypes "github.com/celestiaorg/celestia-app/v8/x/blob/types"
+	squarev4 "github.com/celestiaorg/go-square/v4"
+	"github.com/celestiaorg/go-square/v4/share"
+	blobtx "github.com/celestiaorg/go-square/v4/tx"
 	abci "github.com/cometbft/cometbft/abci/types"
 	tmproto "github.com/cometbft/cometbft/proto/tendermint/types"
 	"github.com/cosmos/cosmos-sdk/telemetry"
@@ -54,30 +54,36 @@ func (app *App) ProcessProposalHandler(ctx sdk.Context, req *abci.RequestProcess
 	)
 	blockHeader := ctx.BlockHeader()
 
+	var (
+		sdkMessageCount int
+		pfbMessageCount int
+		pffMessageCount int
+	)
+
 	// iterate over all txs and ensure that all blobTxs are valid, PFBs are correctly signed, non
 	// blobTxs have no PFBs present and all txs are less than or equal to the max tx size limit
 	for idx, rawTx := range req.Txs {
-		tx := rawTx
+		sdkTxBytes := rawTx
 
 		// all txs must be less than or equal to the max tx size limit
-		currentTxSize := len(tx)
+		currentTxSize := len(rawTx)
 		if currentTxSize > appconsts.MaxTxSize {
 			logInvalidPropBlockError(app.Logger(), blockHeader, fmt.Sprintf("err with tx %d", idx), errors.Wrapf(apperr.ErrTxExceedsMaxSize, "tx size %d bytes is larger than the application's configured MaxTxSize of %d bytes", currentTxSize, appconsts.MaxTxSize))
 			return reject(), nil
 		}
 
+		// BlobTx is the most common special type; check it first.
 		blobTx, isBlobTx, err := blobtx.UnmarshalBlobTx(rawTx)
 		if isBlobTx {
 			if err != nil {
 				logInvalidPropBlockError(app.Logger(), blockHeader, fmt.Sprintf("err with blob tx %d", idx), err)
 				return reject(), nil
 			}
-			tx = blobTx.Tx
+			sdkTxBytes = blobTx.Tx
 		}
-		sdkTx, err := app.encodingConfig.TxConfig.TxDecoder()(tx)
 
-		// Set the tx bytes in the context for app version v3 and greater
-		ctx = ctx.WithTxBytes(tx)
+		sdkTx, err := app.encodingConfig.TxConfig.TxDecoder()(sdkTxBytes)
+		ctx = ctx.WithTxBytes(sdkTxBytes)
 
 		if err != nil {
 			// An error here means that a tx was included in the block that is not decodable.
@@ -85,7 +91,9 @@ func (app *App) ProcessProposalHandler(ctx sdk.Context, req *abci.RequestProcess
 			return reject(), nil
 		}
 
-		// handle non-blob transactions first
+		// Handle non-blob transactions. This includes MsgPayForFibre txs which are
+		// plain SDK txs (not wrapped in BlobTx). squarev4.Construct will detect
+		// MsgPayForFibre and synthesize system blobs when building the square.
 		if !isBlobTx {
 			msgs := sdkTx.GetMsgs()
 
@@ -94,6 +102,29 @@ func (app *App) ProcessProposalHandler(ctx sdk.Context, req *abci.RequestProcess
 				// A non-blob tx has a PFB, which is invalid
 				logInvalidPropBlock(app.Logger(), blockHeader, fmt.Sprintf("tx %d has PFB but is not a blob tx", idx))
 				return reject(), nil
+			}
+
+			// A PayForFibre tx must contain exactly one message: the MsgPayForFibre.
+			// This is consistent with BlobTx which requires exactly one MsgPayForBlobs.
+			pffCount := countMsgPayForFibre(sdkTx)
+			if pffCount > 1 || (pffCount == 1 && len(msgs) != 1) {
+				logInvalidPropBlock(app.Logger(), blockHeader, fmt.Sprintf("tx %d contains %d MsgPayForFibre and %d total messages, expected exactly 1 MsgPayForFibre and no other messages", idx, pffCount, len(msgs)))
+				return reject(), nil
+			}
+
+			// Count MsgPayForFibre messages separately from SDK messages.
+			if pffCount == 1 {
+				pffMessageCount++
+				if pffMessageCount > appconsts.MaxPayForFibreMessages {
+					logInvalidPropBlock(app.Logger(), blockHeader, fmt.Sprintf("block exceeds max PayForFibre message count of %d", appconsts.MaxPayForFibreMessages))
+					return reject(), nil
+				}
+			} else {
+				sdkMessageCount += len(msgs)
+				if sdkMessageCount > appconsts.MaxSDKMessages {
+					logInvalidPropBlock(app.Logger(), blockHeader, fmt.Sprintf("block exceeds max SDK message count of %d", appconsts.MaxSDKMessages))
+					return reject(), nil
+				}
 			}
 
 			// we need to increment the sequence for every transaction so that
@@ -116,35 +147,43 @@ func (app *App) ProcessProposalHandler(ctx sdk.Context, req *abci.RequestProcess
 		// - that the sizes match
 		// - that the namespaces match between blob and PFB
 		// - that the share commitment is correct
-		if err := blobtypes.ValidateBlobTx(app.encodingConfig.TxConfig, blobTx, appconsts.SubtreeRootThreshold, appconsts.Version); err != nil {
-			logInvalidPropBlockError(app.Logger(), blockHeader, fmt.Sprintf("invalid blob tx %d", idx), err)
+		// If this tx was cached from CheckTx, we can skip the expensive
+		// commitment verification since it was already validated. Otherwise, fall back to full validation.
+		if _, err := app.ValidateBlobTxWithCache(blobTx); err != nil {
+			logInvalidPropBlockError(app.Logger(), blockHeader, fmt.Sprintf("blob tx validation failed %d", idx), err)
 			return reject(), nil
 		}
 
-		// validated the PFB signature
+		pfbMessageCount += len(sdkTx.GetMsgs())
+		if pfbMessageCount > appconsts.MaxPFBMessages {
+			logInvalidPropBlock(app.Logger(), blockHeader, fmt.Sprintf("block exceeds max PFB message count of %d", appconsts.MaxPFBMessages))
+			return reject(), nil
+		}
+
 		ctx, err = handler(ctx, sdkTx, false)
 		if err != nil {
-			logInvalidPropBlockError(app.Logger(), blockHeader, "invalid PFB signature", err)
+			logInvalidPropBlockError(app.Logger(), blockHeader, "ante handler validation failed", err)
 			return reject(), nil
 		}
 
 	}
 
-	dataSquare, err := square.Construct(req.Txs, app.MaxEffectiveSquareSize(ctx), appconsts.SubtreeRootThreshold)
+	// Use squarev4.Construct which natively handles BlobTx and FibreTx.
+	dataSquare, err := squarev4.Construct(req.Txs, app.MaxEffectiveSquareSize(ctx), appconsts.SubtreeRootThreshold)
 	if err != nil {
-		logInvalidPropBlockError(app.Logger(), blockHeader, "failure to compute data square from transactions:", err)
+		logInvalidPropBlockError(app.Logger(), blockHeader, "failed to build data square:", err)
+		return reject(), nil
+	}
+
+	eds, err := da.ExtendSharesWithTreePool(share.ToBytes(dataSquare), app.TreePool())
+	if err != nil {
+		logInvalidPropBlockError(app.Logger(), blockHeader, "failure to compute extended data square from transactions:", err)
 		return reject(), nil
 	}
 
 	// Assert that the square size stated by the proposer is correct
-	if uint64(dataSquare.Size()) != req.SquareSize {
+	if uint64(eds.Width()) != req.SquareSize*2 {
 		logInvalidPropBlock(app.Logger(), blockHeader, "proposed square size differs from calculated square size")
-		return reject(), nil
-	}
-
-	eds, err := da.ExtendShares(share.ToBytes(dataSquare))
-	if err != nil {
-		logInvalidPropBlockError(app.Logger(), blockHeader, "failure to erasure the data square", err)
 		return reject(), nil
 	}
 
@@ -206,4 +245,21 @@ func accept() *abci.ResponseProcessProposal {
 	return &abci.ResponseProcessProposal{
 		Status: abci.ResponseProcessProposal_ACCEPT,
 	}
+}
+
+// ValidateBlobTxWithCache validates a blob transaction, using cached validation results when possible.
+// It returns (fromCache, error) where fromCache indicates if the validation was skipped using cache.
+func (app *App) ValidateBlobTxWithCache(blobTx *blobtx.BlobTx) (bool, error) {
+	exists := app.txCache.Exists(blobTx.Tx, blobTx.Blobs)
+	if exists {
+		if _, err := blobtypes.ValidateBlobTxSkipCommitment(app.encodingConfig.TxConfig, blobTx); err != nil {
+			return true, err
+		}
+		return true, nil
+	}
+
+	if err := blobtypes.ValidateBlobTx(app.encodingConfig.TxConfig, blobTx, appconsts.SubtreeRootThreshold, appconsts.Version); err != nil {
+		return false, err
+	}
+	return false, nil
 }

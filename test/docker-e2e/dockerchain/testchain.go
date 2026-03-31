@@ -4,15 +4,15 @@ import (
 	"context"
 	"fmt"
 	"testing"
-	"time"
 
-	"github.com/celestiaorg/celestia-app/v6/app"
-	"github.com/celestiaorg/celestia-app/v6/app/encoding"
-	"github.com/celestiaorg/celestia-app/v6/pkg/user"
-	tastoradockertypes "github.com/celestiaorg/tastora/framework/docker"
+	"github.com/celestiaorg/celestia-app/v8/app"
+	"github.com/celestiaorg/celestia-app/v8/app/encoding"
+	"github.com/celestiaorg/celestia-app/v8/pkg/appconsts"
+	"github.com/celestiaorg/celestia-app/v8/pkg/user"
 	tastoracontainertypes "github.com/celestiaorg/tastora/framework/docker/container"
+	tastoradockertypes "github.com/celestiaorg/tastora/framework/docker/cosmos"
 	"github.com/celestiaorg/tastora/framework/testutil/config"
-	"github.com/celestiaorg/tastora/framework/testutil/maps"
+	tastoratypes "github.com/celestiaorg/tastora/framework/types"
 	cometcfg "github.com/cometbft/cometbft/config"
 	cmtjson "github.com/cometbft/cometbft/libs/json"
 	"github.com/cometbft/cometbft/privval"
@@ -25,11 +25,6 @@ import (
 func NewCelestiaChainBuilder(t *testing.T, cfg *Config) *tastoradockertypes.ChainBuilder {
 	genesisBz, err := cfg.Genesis.ExportBytes()
 	require.NoError(t, err, "failed to export genesis bytes")
-
-	// TODO: why do I need to do this?
-	// fails with 2025-07-03 14:57:42 Error: failed to get current app state: failed to determine genesis version
-	genesisBz, err = maps.SetField(genesisBz, "consensus.params.version.app", "4")
-	require.NoError(t, err)
 
 	encodingConfig := testutil.MakeTestEncodingConfig(app.ModuleEncodingRegisters...)
 
@@ -56,11 +51,12 @@ func NewCelestiaChainBuilder(t *testing.T, cfg *Config) *tastoradockertypes.Chai
 	addr, err := records[0].GetAddress()
 	require.NoError(t, err, "failed to get address from keyring record")
 	// Create the wallet with all required fields
-	faucetWallet := tastoradockertypes.NewWallet(addr, addr.String(), "celestia", records[0].Name)
+	faucetWallet := tastoratypes.NewWallet(addr, addr.String(), "celestia", records[0].Name)
 
 	return tastoradockertypes.NewChainBuilder(t).
 		WithName("celestia"). // just influences home directory on the host.
 		WithChainID(cfg.Genesis.ChainID).
+		WithBinaryName("celestia-appd").
 		WithDockerClient(cfg.DockerClient).
 		WithDockerNetworkID(cfg.DockerNetworkID).
 		WithImage(tastoracontainertypes.NewImage(cfg.Image, cfg.Tag, "10001:10001")).
@@ -82,9 +78,9 @@ func getPostInitModifications(gasPrices string) []func(context.Context, *tastora
 			cfg.TxIndex.Indexer = "kv"
 			cfg.P2P.AllowDuplicateIP = true
 			cfg.P2P.AddrBookStrict = false
-			blockTime := time.Duration(2) * time.Second
-			cfg.Consensus.TimeoutCommit = blockTime
-			cfg.Consensus.TimeoutPropose = blockTime
+			cfg.Storage.DiscardABCIResponses = false
+			cfg.Consensus.TimeoutCommit = appconsts.TimeoutCommit
+			cfg.Consensus.TimeoutPropose = appconsts.TimeoutPropose
 			cfg.RPC.ListenAddress = "tcp://0.0.0.0:26657"
 			cfg.RPC.GRPCListenAddress = "tcp://0.0.0.0:9099"
 			cfg.RPC.CORSAllowedOrigins = []string{"*"}
@@ -127,7 +123,7 @@ func SetupTxClient(ctx context.Context, cn *tastoradockertypes.ChainNode, cfg *C
 //
 //	for i, nodeBuilder := range nodeBuilders {
 //	    version := getVersionForIndex(i)
-//		nodeBuilder.WithImage(tastoradockertypes.NewDockerImage(cfg.Image, version, "10001:10001")
+//		nodeBuilder.WithImage(tastoracontainertypes.NewImage(cfg.Image, version, "10001:10001"))
 //	}
 func NodeConfigBuilders(cfg *Config) ([]*tastoradockertypes.ChainNodeConfigBuilder, error) {
 	kr := cfg.Genesis.Keyring()

@@ -12,13 +12,21 @@ import (
 	hyperlanetypes "github.com/bcp-innovations/hyperlane-cosmos/x/core/types"
 	"github.com/bcp-innovations/hyperlane-cosmos/x/warp"
 	warptypes "github.com/bcp-innovations/hyperlane-cosmos/x/warp/types"
-	"github.com/celestiaorg/celestia-app/v6/x/blob"
-	blobtypes "github.com/celestiaorg/celestia-app/v6/x/blob/types"
-	"github.com/celestiaorg/celestia-app/v6/x/minfee"
-	minfeetypes "github.com/celestiaorg/celestia-app/v6/x/minfee/types"
-	minttypes "github.com/celestiaorg/celestia-app/v6/x/mint/types"
-	"github.com/celestiaorg/celestia-app/v6/x/signal"
-	signaltypes "github.com/celestiaorg/celestia-app/v6/x/signal/types"
+	"github.com/celestiaorg/celestia-app/v8/x/blob"
+	blobtypes "github.com/celestiaorg/celestia-app/v8/x/blob/types"
+	"github.com/celestiaorg/celestia-app/v8/x/fibre"
+	fibretypes "github.com/celestiaorg/celestia-app/v8/x/fibre/types"
+	"github.com/celestiaorg/celestia-app/v8/x/forwarding"
+	forwardingtypes "github.com/celestiaorg/celestia-app/v8/x/forwarding/types"
+	"github.com/celestiaorg/celestia-app/v8/x/minfee"
+	minfeetypes "github.com/celestiaorg/celestia-app/v8/x/minfee/types"
+	minttypes "github.com/celestiaorg/celestia-app/v8/x/mint/types"
+	"github.com/celestiaorg/celestia-app/v8/x/signal"
+	signaltypes "github.com/celestiaorg/celestia-app/v8/x/signal/types"
+	"github.com/celestiaorg/celestia-app/v8/x/valaddr"
+	valaddrtypes "github.com/celestiaorg/celestia-app/v8/x/valaddr/types"
+	"github.com/celestiaorg/celestia-app/v8/x/zkism"
+	zkismtypes "github.com/celestiaorg/celestia-app/v8/x/zkism/types"
 	"github.com/cosmos/cosmos-sdk/types/module"
 	"github.com/cosmos/cosmos-sdk/x/auth"
 	authtypes "github.com/cosmos/cosmos-sdk/x/auth/types"
@@ -82,11 +90,15 @@ var ModuleEncodingRegisters = []module.AppModuleBasic{
 	// hyperlane
 	hyperlanecore.AppModule{},
 	warp.AppModule{},
+	zkism.AppModule{},
 	// celestia
 	blob.AppModule{},
+	fibre.AppModule{},
+	forwarding.AppModule{},
 	minfee.AppModule{},
 	mintModule{},
 	signal.AppModule{},
+	valaddr.AppModule{},
 }
 
 func (app *App) setModuleOrder() {
@@ -109,8 +121,11 @@ func (app *App) setModuleOrder() {
 		authz.ModuleName,
 		signaltypes.ModuleName,
 		minfeetypes.ModuleName,
+		fibretypes.ModuleName,
 		icatypes.ModuleName,
 		packetforwardtypes.ModuleName,
+		zkismtypes.ModuleName,
+		valaddrtypes.ModuleName,
 	)
 
 	app.ModuleManager.SetOrderPreBlockers(
@@ -137,8 +152,10 @@ func (app *App) setModuleOrder() {
 		vestingtypes.ModuleName,
 		signaltypes.ModuleName,
 		minfeetypes.ModuleName,
+		fibretypes.ModuleName,
 		packetforwardtypes.ModuleName,
 		icatypes.ModuleName,
+		valaddrtypes.ModuleName,
 	)
 
 	// NOTE: The genutils module must occur after staking so that pools are
@@ -175,6 +192,10 @@ func (app *App) setModuleOrder() {
 		circuittypes.ModuleName,
 		hyperlanetypes.ModuleName,
 		warptypes.ModuleName,
+		zkismtypes.ModuleName,
+		forwardingtypes.ModuleName,
+		fibretypes.ModuleName,
+		valaddrtypes.ModuleName,
 	)
 }
 
@@ -204,5 +225,8 @@ func allStoreKeys() []string {
 		circuittypes.StoreKey,     // added in v4
 		hyperlanetypes.ModuleName, // added in v4
 		warptypes.ModuleName,      // added in v4
+		zkismtypes.StoreKey,       // added in v7
+		valaddrtypes.StoreKey,     // added in v8
+		fibretypes.StoreKey,       // added in v8
 	}
 }

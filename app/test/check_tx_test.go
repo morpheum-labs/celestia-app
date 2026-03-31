@@ -3,25 +3,30 @@ package app_test
 import (
 	"bytes"
 	"testing"
+	"time"
 
-	"github.com/celestiaorg/celestia-app/v6/app"
-	"github.com/celestiaorg/celestia-app/v6/app/encoding"
-	apperr "github.com/celestiaorg/celestia-app/v6/app/errors"
-	"github.com/celestiaorg/celestia-app/v6/pkg/appconsts"
-	"github.com/celestiaorg/celestia-app/v6/pkg/user"
-	testutil "github.com/celestiaorg/celestia-app/v6/test/util"
-	"github.com/celestiaorg/celestia-app/v6/test/util/blobfactory"
-	"github.com/celestiaorg/celestia-app/v6/test/util/random"
-	"github.com/celestiaorg/celestia-app/v6/test/util/testfactory"
-	"github.com/celestiaorg/celestia-app/v6/test/util/testnode"
-	blobtypes "github.com/celestiaorg/celestia-app/v6/x/blob/types"
-	"github.com/celestiaorg/go-square/v2/share"
-	"github.com/celestiaorg/go-square/v2/tx"
+	sdkmath "cosmossdk.io/math"
+	"github.com/celestiaorg/celestia-app/v8/app"
+	"github.com/celestiaorg/celestia-app/v8/app/encoding"
+	apperr "github.com/celestiaorg/celestia-app/v8/app/errors"
+	"github.com/celestiaorg/celestia-app/v8/pkg/appconsts"
+	"github.com/celestiaorg/celestia-app/v8/pkg/user"
+	testutil "github.com/celestiaorg/celestia-app/v8/test/util"
+	"github.com/celestiaorg/celestia-app/v8/test/util/blobfactory"
+	"github.com/celestiaorg/celestia-app/v8/test/util/random"
+	"github.com/celestiaorg/celestia-app/v8/test/util/testfactory"
+	"github.com/celestiaorg/celestia-app/v8/test/util/testnode"
+	blobtypes "github.com/celestiaorg/celestia-app/v8/x/blob/types"
+	"github.com/celestiaorg/go-square/v4/share"
+	"github.com/celestiaorg/go-square/v4/tx"
 	abci "github.com/cometbft/cometbft/abci/types"
 	coretypes "github.com/cometbft/cometbft/types"
 	"github.com/cosmos/cosmos-sdk/client"
 	"github.com/cosmos/cosmos-sdk/crypto/keyring"
 	sdk "github.com/cosmos/cosmos-sdk/types"
+	"github.com/cosmos/cosmos-sdk/types/tx/signing"
+	authsigning "github.com/cosmos/cosmos-sdk/x/auth/signing"
+	vestingtypes "github.com/cosmos/cosmos-sdk/x/auth/vesting/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -39,7 +44,7 @@ func TestCheckTx(t *testing.T) {
 	namespace1, err = share.NewV0Namespace(bytes.Repeat([]byte{1}, share.NamespaceVersionZeroIDSize))
 	require.NoError(t, err)
 
-	accounts := []string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m"}
+	accounts := []string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n"}
 	testApp, kr := testutil.SetupTestAppWithGenesisValSet(app.DefaultConsensusParams(), accounts...)
 
 	signers := make([]*user.Signer, len(accounts))
@@ -237,15 +242,103 @@ func TestCheckTx(t *testing.T) {
 			},
 			expectedABCICode: apperr.ErrTxExceedsMaxSize.ABCICode(),
 		},
+		{
+			// NOTE: this test is in place due to a regression where ledger via amino-json
+			// were not able to submit a MsgCreateVestingAccount transaction.
+			name:      "MsgCreateVestingAccount using amino-json",
+			checkType: abci.CheckTxType_New,
+			getTx: func() []byte {
+				signer := signers[13]
+				msg := &vestingtypes.MsgCreateVestingAccount{
+					FromAddress: signer.Account(accounts[13]).Address().String(),
+					ToAddress:   testutil.AccPubKeys[0].Address().String(),
+					Amount:      sdk.NewCoins(sdk.NewCoin(appconsts.BondDenom, sdkmath.NewInt(1000))),
+					Delayed:     true,
+					EndTime:     time.Now().Add(2 * time.Hour).Unix(),
+					StartTime:   time.Now().Add(1 * time.Hour).Unix(),
+				}
+				tx, _, err := signer.
+					WithSignMode(signing.SignMode_SIGN_MODE_LEGACY_AMINO_JSON).
+					CreateTx([]sdk.Msg{msg}, user.SetGasLimitAndGasPrice(100000, appconsts.DefaultMinGasPrice))
+				require.NoError(t, err)
+				return tx
+			},
+			expectedABCICode: abci.CodeTypeOK,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			resp, err = testApp.CheckTx(&abci.RequestCheckTx{Type: tt.checkType, Tx: tt.getTx()})
+			txBz := tt.getTx()
+			resp, err = testApp.CheckTx(&abci.RequestCheckTx{Type: tt.checkType, Tx: txBz})
 			if resp.Code == 0 {
 				require.NoError(t, err)
 			}
 			assert.Equal(t, tt.expectedABCICode, resp.Code, resp.Log)
+
+			if resp.Code != abci.CodeTypeOK {
+				return
+			}
+
+			var baseTxBz []byte
+			decodedBlobTx, isBlob, err := tx.UnmarshalBlobTx(txBz)
+			if isBlob {
+				require.NoError(t, err)
+				require.NotNil(t, decodedBlobTx)
+				baseTxBz = decodedBlobTx.Tx
+			} else {
+				// Non-blob transactions can surface decoding errors (e.g. invalid UTF-8 inside signatures)
+				// which we can safely ignore since we only need the raw tx bytes for non-blob txs.
+				baseTxBz = txBz
+			}
+
+			sdkTx, err := encodingConfig.TxConfig.TxDecoder()(baseTxBz)
+			require.NoError(t, err)
+
+			sigTx, ok := sdkTx.(authsigning.SigVerifiableTx)
+			require.True(t, ok, "tx must implement SigVerifiableTx")
+
+			sigs, err := sigTx.GetSignaturesV2()
+			require.NoError(t, err)
+			require.NotEmpty(t, sigs)
+
+			require.Equal(t, sigs[0].PubKey.Address().Bytes(), resp.Address)
+			require.Equal(t, sigs[0].Sequence, resp.Sequence)
+		})
+	}
+}
+
+// TestCheckTx_UnknownRequestType verifies that an unknown CheckTxType returns
+// an error response instead of panicking.
+func TestCheckTx_UnknownRequestType(t *testing.T) {
+	encodingConfig := encoding.MakeConfig(app.ModuleEncodingRegisters...)
+	namespace1, err := share.NewV0Namespace(bytes.Repeat([]byte{1}, share.NamespaceVersionZeroIDSize))
+	require.NoError(t, err)
+
+	accounts := []string{"a"}
+	testApp, kr := testutil.SetupTestAppWithGenesisValSet(app.DefaultConsensusParams(), accounts...)
+	fetchedAcc := testutil.DirectQueryAccount(testApp, testfactory.GetAddress(kr, "a"))
+	signer := createSigner(t, kr, "a", encodingConfig.TxConfig, fetchedAcc.GetAccountNumber())
+
+	// Create a valid blob transaction.
+	blobTxBytes := blobfactory.RandBlobTxsWithNamespacesAndSigner(
+		signer,
+		[]share.Namespace{namespace1},
+		[]int{100},
+	)[0]
+
+	unknownCheckTxTypes := []abci.CheckTxType{2, 99, -1}
+	for _, unknownType := range unknownCheckTxTypes {
+		t.Run(unknownType.String(), func(t *testing.T) {
+			assert.NotPanics(t, func() {
+				resp, err := testApp.CheckTx(&abci.RequestCheckTx{
+					Type: unknownType,
+					Tx:   blobTxBytes,
+				})
+				require.Error(t, err)
+				assert.NotEqual(t, abci.CodeTypeOK, resp.Code)
+				assert.Contains(t, resp.Log, "unknown RequestCheckTx type")
+			})
 		})
 	}
 }
